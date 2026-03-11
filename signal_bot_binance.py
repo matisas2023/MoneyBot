@@ -1,42 +1,45 @@
 """
-Signal Bot для POCKET OPTION (лише аналіз, без відкриття угод).
+Signal Bot для POCKET OPTION (лише аналіз, без відкриття угод) з GUI.
 
-Що робить бот:
-- Підключається до Pocket Option через неофіційний API-клієнт.
-- Завантажує свічки (OHLC) для валютних пар.
-- Аналізує прибутковість списку валютних пар і обирає пару для моніторингу.
-- Розраховує EMA(9), EMA(21), RSI(14) без TA-Lib.
-- Друкує BUY / SELL / NO SIGNAL у консоль.
+Функціонал:
+- Авторизація через Email/Password або Google-session (SSID).
+- Завантаження OHLC для валютних пар Pocket Option.
+- Аналіз прибутковості списку пар перед моніторингом.
+- Розрахунок EMA(9), EMA(21), RSI(14) без TA-Lib.
+- Сигнали BUY / SELL / NO SIGNAL.
+- Захист від дублювання сигналів на тій самій свічці.
+- Графічна оболонка (Tkinter) для запуску/зупинки бота.
 
 Увага:
 Pocket Option не має офіційного публічного Python SDK.
-Скрипт нижче орієнтований на популярний community-клієнт `pocketoptionapi`.
+Скрипт орієнтований на community-бібліотеку `pocketoptionapi`.
 """
 
+import threading
 import time
-from datetime import datetime, timezone
-from typing import Any
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Callable
 
 import pandas as pd
+import tkinter as tk
+from tkinter import ttk, messagebox
 
 try:
-    # Приклад неофіційного клієнта Pocket Option
     from pocketoptionapi.stable_api import PocketOption
 except ImportError:
     PocketOption = None
 
 
 # =========================
-# Константи налаштування
+# Константи за замовчуванням
 # =========================
-TIMEFRAME_SEC = 300          # 300 сек = 5 хв
-CANDLES_LIMIT = 150          # Кількість свічок для аналізу
-CHECK_INTERVAL_SEC = 20      # Пауза між перевірками
-API_RETRY_DELAY_SEC = 10     # Пауза після помилки API
+DEFAULT_TIMEFRAME_SEC = 300
+DEFAULT_CANDLES_LIMIT = 150
+DEFAULT_CHECK_INTERVAL_SEC = 20
+DEFAULT_API_RETRY_DELAY_SEC = 10
 
-# Валютні пари (Forex), які зазвичай доступні в Pocket Option
-# За потреби змініть список під свій акаунт/регіон.
-POCKETOPTION_FOREX_PAIRS = [
+DEFAULT_FOREX_PAIRS = [
     "EURUSD",
     "GBPUSD",
     "USDJPY",
@@ -49,27 +52,59 @@ POCKETOPTION_FOREX_PAIRS = [
     "EURGBP",
 ]
 
-# Якщо True — бот автоматично бере найприбутковішу пару.
-# Якщо False — дає вибір користувачу через консоль.
-AUTO_SELECT_BEST_PAIR = True
-
 EMA_FAST_PERIOD = 9
 EMA_SLOW_PERIOD = 21
 RSI_PERIOD = 14
 
-# ДАНІ ДЛЯ АВТОРИЗАЦІЇ (заповніть своїми)
-PO_EMAIL = "your_email@example.com"
-PO_PASSWORD = "your_password"
+
+@dataclass
+class BotConfig:
+    auth_method: str  # "password" | "google"
+    email: str
+    password: str
+    google_ssid: str
+    pairs: list[str]
+    auto_select_best_pair: bool
+    timeframe_sec: int
+    candles_limit: int
+    check_interval_sec: int
+    api_retry_delay_sec: int
 
 
-def create_pocketoption_client() -> Any:
-    """Створює і підключає клієнт Pocket Option."""
+# =========================
+# Службові функції API
+# =========================
+def create_pocketoption_client(config: BotConfig) -> Any:
+    """Створює клієнт Pocket Option з підтримкою двох способів авторизації."""
     if PocketOption is None:
-        raise ImportError(
-            "Не знайдено модуль pocketoptionapi. Встановіть його перед запуском."
-        )
+        raise ImportError("Не знайдено pocketoptionapi. Встановіть: pip install pocketoptionapi")
 
-    client = PocketOption(PO_EMAIL, PO_PASSWORD)
+    auth_method = config.auth_method.lower().strip()
+
+    # Авторизація через Email/Password
+    if auth_method == "password":
+        if not config.email or not config.password:
+            raise ValueError("Для авторизації password потрібно вказати email та password.")
+        client = PocketOption(config.email, config.password)
+
+    # Авторизація через Google-session (SSID)
+    # Практично це токен/cookie-сесії після входу через Google в браузері.
+    elif auth_method == "google":
+        if not config.google_ssid:
+            raise ValueError("Для Google-авторизації потрібно вказати SSID (токен сесії).")
+
+        # Різні версії community-клієнтів мають різні сигнатури конструктора,
+        # тому пробуємо кілька сумісних варіантів.
+        try:
+            client = PocketOption(config.google_ssid)
+        except TypeError:
+            try:
+                client = PocketOption(ssid=config.google_ssid)
+            except TypeError:
+                client = PocketOption("", "", config.google_ssid)
+    else:
+        raise ValueError("Невідомий метод авторизації. Використайте 'password' або 'google'.")
+
     is_connected = client.connect()
     if not is_connected:
         raise ConnectionError("Не вдалося підключитися до Pocket Option.")
@@ -77,45 +112,31 @@ def create_pocketoption_client() -> Any:
     return client
 
 
-def fetch_ohlc_dataframe(
-    client: Any,
-    symbol: str,
-    timeframe_sec: int,
-    limit: int,
-) -> pd.DataFrame:
-    """
-    Отримує OHLC-дані з Pocket Option і повертає DataFrame.
-
-    Очікуваний формат від клієнта: список свічок із полями на кшталт
-    timestamp/open/high/low/close (назви можуть залежати від версії API).
-    """
+def fetch_ohlc_dataframe(client: Any, symbol: str, timeframe_sec: int, limit: int) -> pd.DataFrame:
+    """Отримує OHLC-дані для пари та нормалізує до DataFrame."""
     end_time = int(time.time())
-    start_time = end_time - (timeframe_sec * limit)
+    start_time = end_time - timeframe_sec * limit
 
     candles = client.get_candles(symbol, timeframe_sec, start_time, end_time)
-
     if not candles:
         raise ValueError(f"Не отримано свічок для {symbol}.")
 
     df = pd.DataFrame(candles)
-
-    # Уніфікація назв колонок (різні клієнти можуть повертати різні ключі)
-    rename_map = {
-        "from": "timestamp",
-        "time": "timestamp",
-        "t": "timestamp",
-        "o": "open",
-        "h": "high",
-        "l": "low",
-        "c": "close",
-    }
-    df = df.rename(columns=rename_map)
+    df = df.rename(
+        columns={
+            "from": "timestamp",
+            "time": "timestamp",
+            "t": "timestamp",
+            "o": "open",
+            "h": "high",
+            "l": "low",
+            "c": "close",
+        }
+    )
 
     required_cols = {"timestamp", "open", "high", "low", "close"}
     if not required_cols.issubset(df.columns):
-        raise ValueError(
-            f"Некоректний формат свічок для {symbol}. Колонки: {list(df.columns)}"
-        )
+        raise ValueError(f"Некоректний формат свічок для {symbol}. Отримано: {list(df.columns)}")
 
     df = df[["timestamp", "open", "high", "low", "close"]].copy()
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s", utc=True)
@@ -123,21 +144,19 @@ def fetch_ohlc_dataframe(
     for col in ["open", "high", "low", "close"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    df = df.dropna().sort_values("timestamp").reset_index(drop=True)
-    return df
+    return df.dropna().sort_values("timestamp").reset_index(drop=True)
 
 
+# =========================
+# Торгова аналітика
+# =========================
 def calculate_profitability_percent(df: pd.DataFrame) -> float:
-    """Рахує прибутковість у % за доступну історію."""
     if df.empty:
         return float("-inf")
-
     first_close = float(df.iloc[0]["close"])
     last_close = float(df.iloc[-1]["close"])
-
     if first_close == 0:
         return float("-inf")
-
     return ((last_close - first_close) / first_close) * 100
 
 
@@ -146,96 +165,72 @@ def analyze_pairs_profitability(
     pairs: list[str],
     timeframe_sec: int,
     limit: int,
+    log: Callable[[str], None],
 ) -> list[dict]:
-    """Аналізує прибутковість валютних пар PO і повертає рейтинг."""
-    print("\nАналіз прибутковості валютних пар Pocket Option...", flush=True)
-    report = []
+    """Оцінює прибутковість по кожній валютній парі."""
+    report: list[dict] = []
+    log("Аналіз прибутковості пар...")
 
     for pair in pairs:
         try:
             df = fetch_ohlc_dataframe(client, pair, timeframe_sec, limit)
             profit_pct = calculate_profitability_percent(df)
             report.append({"symbol": pair, "profit_pct": profit_pct})
-            print(f"- {pair}: {profit_pct:+.2f}%", flush=True)
+            log(f"- {pair}: {profit_pct:+.2f}%")
         except Exception as error:
-            print(f"- {pair}: не вдалося отримати дані ({error})", flush=True)
+            log(f"- {pair}: помилка ({error})")
 
     report.sort(key=lambda item: item["profit_pct"], reverse=True)
     return report
 
 
-def choose_pair_from_report(report: list[dict]) -> str:
-    """Обирає пару: автоматично найкращу або вручну з рейтингу."""
+def select_pair(report: list[dict], auto_select_best_pair: bool) -> str:
+    """Повертає найкращу пару або першу в списку (якщо auto вимкнено)."""
     if not report:
-        raise RuntimeError("Немає доступних валютних пар для моніторингу.")
-
-    print("\nРейтинг валютних пар за прибутковістю:", flush=True)
-    for i, item in enumerate(report, start=1):
-        print(f"{i}. {item['symbol']} ({item['profit_pct']:+.2f}%)", flush=True)
-
-    if AUTO_SELECT_BEST_PAIR:
-        selected = report[0]["symbol"]
-        print(f"\nАвтовибір найприбутковішої пари: {selected}", flush=True)
-        return selected
-
-    while True:
-        user_input = input("\nВведіть номер пари для моніторингу: ").strip()
-        if not user_input.isdigit():
-            print("Введіть коректне число.", flush=True)
-            continue
-
-        choice = int(user_input)
-        if 1 <= choice <= len(report):
-            selected = report[choice - 1]["symbol"]
-            print(f"Обрано: {selected}", flush=True)
-            return selected
-
-        print("Номер поза межами списку.", flush=True)
+        raise RuntimeError("Немає пар для моніторингу після аналізу.")
+    if auto_select_best_pair:
+        return report[0]["symbol"]
+    return report[0]["symbol"]
 
 
 def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """Додає індикатори EMA(9), EMA(21), RSI(14)."""
     result = df.copy()
-
     result["ema9"] = result["close"].ewm(span=EMA_FAST_PERIOD, adjust=False).mean()
     result["ema21"] = result["close"].ewm(span=EMA_SLOW_PERIOD, adjust=False).mean()
 
     delta = result["close"].diff()
     gains = delta.clip(lower=0)
     losses = -delta.clip(upper=0)
-
     avg_gain = gains.rolling(window=RSI_PERIOD, min_periods=RSI_PERIOD).mean()
     avg_loss = losses.rolling(window=RSI_PERIOD, min_periods=RSI_PERIOD).mean()
 
     rs = avg_gain / avg_loss
     result["rsi"] = 100 - (100 / (1 + rs))
-
     return result
 
 
 def detect_signal(df: pd.DataFrame) -> str:
-    """Визначає BUY / SELL / NO SIGNAL за останніми двома свічками."""
     if len(df) < RSI_PERIOD + 2:
         return "NO SIGNAL"
 
-    previous_candle = df.iloc[-2]
-    current_candle = df.iloc[-1]
+    prev_candle = df.iloc[-2]
+    curr_candle = df.iloc[-1]
 
-    if pd.isna(current_candle["rsi"]):
+    if pd.isna(curr_candle["rsi"]):
         return "NO SIGNAL"
 
     buy_signal = (
-        previous_candle["ema9"] <= previous_candle["ema21"]
-        and current_candle["ema9"] > current_candle["ema21"]
-        and 45 <= current_candle["rsi"] <= 70
-        and current_candle["close"] > current_candle["ema21"]
+        prev_candle["ema9"] <= prev_candle["ema21"]
+        and curr_candle["ema9"] > curr_candle["ema21"]
+        and 45 <= curr_candle["rsi"] <= 70
+        and curr_candle["close"] > curr_candle["ema21"]
     )
 
     sell_signal = (
-        previous_candle["ema9"] >= previous_candle["ema21"]
-        and current_candle["ema9"] < current_candle["ema21"]
-        and 30 <= current_candle["rsi"] <= 55
-        and current_candle["close"] < current_candle["ema21"]
+        prev_candle["ema9"] >= prev_candle["ema21"]
+        and curr_candle["ema9"] < curr_candle["ema21"]
+        and 30 <= curr_candle["rsi"] <= 55
+        and curr_candle["close"] < curr_candle["ema21"]
     )
 
     if buy_signal:
@@ -245,54 +240,37 @@ def detect_signal(df: pd.DataFrame) -> str:
     return "NO SIGNAL"
 
 
-def print_status(
-    signal: str,
-    symbol: str,
-    candle_time: pd.Timestamp,
-    close_price: float,
-    ema9: float,
-    ema21: float,
-    rsi: float,
-    duplicate: bool,
-) -> None:
-    """Акуратний вивід статусу в консоль."""
-    now_local = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    candle_str = candle_time.strftime("%Y-%m-%d %H:%M:%S UTC")
-    duplicate_label = " (дублікат пропущено)" if duplicate else ""
+# =========================
+# Логіка бота в окремому потоці
+# =========================
+def run_signal_bot(config: BotConfig, stop_event: threading.Event, log: Callable[[str], None]) -> None:
+    client = create_pocketoption_client(config)
+    log("Успішно підключено до Pocket Option.")
 
-    print(
-        f"[{now_local}] {symbol} {TIMEFRAME_SEC}s | "
-        f"Candle: {candle_str} | "
-        f"Close: {close_price:.6f} | EMA9: {ema9:.6f} | EMA21: {ema21:.6f} | RSI: {rsi:.2f} | "
-        f"Signal: {signal}{duplicate_label}",
-        flush=True,
-    )
-
-
-def run_signal_bot() -> None:
-    """Основний цикл signal bot для Pocket Option."""
-    client = create_pocketoption_client()
-
-    profitability_report = analyze_pairs_profitability(
+    report = analyze_pairs_profitability(
         client=client,
-        pairs=POCKETOPTION_FOREX_PAIRS,
-        timeframe_sec=TIMEFRAME_SEC,
-        limit=CANDLES_LIMIT,
+        pairs=config.pairs,
+        timeframe_sec=config.timeframe_sec,
+        limit=config.candles_limit,
+        log=log,
     )
-    selected_pair = choose_pair_from_report(profitability_report)
+    for idx, row in enumerate(report, start=1):
+        log(f"{idx}. {row['symbol']} ({row['profit_pct']:+.2f}%)")
+
+    selected_pair = select_pair(report, config.auto_select_best_pair)
+    log(f"Пара для моніторингу: {selected_pair}")
 
     last_signal_candle_timestamp = None
     last_signal_type = None
 
-    print("\nЗапуск Pocket Option Signal Bot (без відкриття угод)...", flush=True)
-    print(
-        f"Пара: {selected_pair} | Таймфрейм: {TIMEFRAME_SEC}s | Інтервал перевірки: {CHECK_INTERVAL_SEC}с",
-        flush=True,
-    )
-
-    while True:
+    while not stop_event.is_set():
         try:
-            market_df = fetch_ohlc_dataframe(client, selected_pair, TIMEFRAME_SEC, CANDLES_LIMIT)
+            market_df = fetch_ohlc_dataframe(
+                client=client,
+                symbol=selected_pair,
+                timeframe_sec=config.timeframe_sec,
+                limit=config.candles_limit,
+            )
             market_df = calculate_indicators(market_df)
 
             signal = detect_signal(market_df)
@@ -309,45 +287,170 @@ def run_signal_bot() -> None:
                 last_signal_candle_timestamp = candle_timestamp
                 last_signal_type = signal
 
-            print_status(
-                signal=signal,
-                symbol=selected_pair,
-                candle_time=candle_timestamp,
-                close_price=float(current["close"]),
-                ema9=float(current["ema9"]),
-                ema21=float(current["ema21"]),
-                rsi=float(current["rsi"]) if not pd.isna(current["rsi"]) else float("nan"),
-                duplicate=is_duplicate,
+            now_local = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            candle_str = candle_timestamp.strftime("%Y-%m-%d %H:%M:%S UTC")
+            duplicate_label = " (дублікат пропущено)" if is_duplicate else ""
+
+            log(
+                f"[{now_local}] {selected_pair} {config.timeframe_sec}s | "
+                f"Candle: {candle_str} | "
+                f"Close: {float(current['close']):.6f} | "
+                f"EMA9: {float(current['ema9']):.6f} | "
+                f"EMA21: {float(current['ema21']):.6f} | "
+                f"RSI: {float(current['rsi']):.2f} | "
+                f"Signal: {signal}{duplicate_label}"
             )
 
-            time.sleep(CHECK_INTERVAL_SEC)
+            stop_event.wait(config.check_interval_sec)
 
         except Exception as error:
-            # Універсальна обробка помилок API/мережі/формату даних
-            print(f"[ПОМИЛКА API] {error}", flush=True)
-            time.sleep(API_RETRY_DELAY_SEC)
+            log(f"[ПОМИЛКА API] {error}")
+            stop_event.wait(config.api_retry_delay_sec)
 
 
-def run() -> None:
-    """Точка входу з базовим захистом від критичних помилок підключення."""
-    try:
-        run_signal_bot()
-    except KeyboardInterrupt:
-        print("\nЗупинено користувачем.", flush=True)
-    except Exception as error:
-        now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        print(f"[{now_utc}] Критична помилка запуску: {error}", flush=True)
+# =========================
+# GUI
+# =========================
+class SignalBotGUI:
+    def __init__(self) -> None:
+        self.root = tk.Tk()
+        self.root.title("Pocket Option Signal Bot")
+        self.root.geometry("900x650")
+
+        self.stop_event = threading.Event()
+        self.bot_thread: threading.Thread | None = None
+
+        self._build_form()
+
+    def _build_form(self) -> None:
+        frame = ttk.Frame(self.root, padding=12)
+        frame.pack(fill="both", expand=True)
+
+        # Авторизація
+        ttk.Label(frame, text="Метод авторизації:").grid(row=0, column=0, sticky="w")
+        self.auth_method_var = tk.StringVar(value="password")
+        auth_combo = ttk.Combobox(frame, textvariable=self.auth_method_var, values=["password", "google"], state="readonly")
+        auth_combo.grid(row=0, column=1, sticky="ew", padx=6, pady=4)
+
+        ttk.Label(frame, text="Email:").grid(row=1, column=0, sticky="w")
+        self.email_var = tk.StringVar()
+        ttk.Entry(frame, textvariable=self.email_var).grid(row=1, column=1, sticky="ew", padx=6, pady=4)
+
+        ttk.Label(frame, text="Password:").grid(row=2, column=0, sticky="w")
+        self.password_var = tk.StringVar()
+        ttk.Entry(frame, textvariable=self.password_var, show="*").grid(row=2, column=1, sticky="ew", padx=6, pady=4)
+
+        ttk.Label(frame, text="Google SSID:").grid(row=3, column=0, sticky="w")
+        self.google_ssid_var = tk.StringVar()
+        ttk.Entry(frame, textvariable=self.google_ssid_var).grid(row=3, column=1, sticky="ew", padx=6, pady=4)
+
+        # Налаштування бота
+        ttk.Label(frame, text="Валютні пари (через кому):").grid(row=4, column=0, sticky="w")
+        self.pairs_var = tk.StringVar(value=", ".join(DEFAULT_FOREX_PAIRS))
+        ttk.Entry(frame, textvariable=self.pairs_var).grid(row=4, column=1, sticky="ew", padx=6, pady=4)
+
+        ttk.Label(frame, text="Таймфрейм (сек):").grid(row=5, column=0, sticky="w")
+        self.timeframe_var = tk.StringVar(value=str(DEFAULT_TIMEFRAME_SEC))
+        ttk.Entry(frame, textvariable=self.timeframe_var).grid(row=5, column=1, sticky="ew", padx=6, pady=4)
+
+        ttk.Label(frame, text="Кількість свічок:").grid(row=6, column=0, sticky="w")
+        self.limit_var = tk.StringVar(value=str(DEFAULT_CANDLES_LIMIT))
+        ttk.Entry(frame, textvariable=self.limit_var).grid(row=6, column=1, sticky="ew", padx=6, pady=4)
+
+        ttk.Label(frame, text="Інтервал перевірки (сек):").grid(row=7, column=0, sticky="w")
+        self.check_var = tk.StringVar(value=str(DEFAULT_CHECK_INTERVAL_SEC))
+        ttk.Entry(frame, textvariable=self.check_var).grid(row=7, column=1, sticky="ew", padx=6, pady=4)
+
+        ttk.Label(frame, text="Пауза після помилки (сек):").grid(row=8, column=0, sticky="w")
+        self.retry_var = tk.StringVar(value=str(DEFAULT_API_RETRY_DELAY_SEC))
+        ttk.Entry(frame, textvariable=self.retry_var).grid(row=8, column=1, sticky="ew", padx=6, pady=4)
+
+        self.auto_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(frame, text="Автовибір найприбутковішої пари", variable=self.auto_var).grid(
+            row=9, column=0, columnspan=2, sticky="w", pady=4
+        )
+
+        btn_frame = ttk.Frame(frame)
+        btn_frame.grid(row=10, column=0, columnspan=2, sticky="ew", pady=8)
+        ttk.Button(btn_frame, text="Старт", command=self.start_bot).pack(side="left", padx=4)
+        ttk.Button(btn_frame, text="Стоп", command=self.stop_bot).pack(side="left", padx=4)
+
+        self.log_text = tk.Text(frame, height=22, wrap="word")
+        self.log_text.grid(row=11, column=0, columnspan=2, sticky="nsew")
+
+        frame.columnconfigure(1, weight=1)
+        frame.rowconfigure(11, weight=1)
+
+    def log(self, text: str) -> None:
+        def _append() -> None:
+            self.log_text.insert("end", text + "\n")
+            self.log_text.see("end")
+        self.root.after(0, _append)
+
+    def _build_config(self) -> BotConfig:
+        pairs = [pair.strip().upper() for pair in self.pairs_var.get().split(",") if pair.strip()]
+        if not pairs:
+            raise ValueError("Вкажіть хоча б одну валютну пару.")
+
+        return BotConfig(
+            auth_method=self.auth_method_var.get().strip().lower(),
+            email=self.email_var.get().strip(),
+            password=self.password_var.get(),
+            google_ssid=self.google_ssid_var.get().strip(),
+            pairs=pairs,
+            auto_select_best_pair=self.auto_var.get(),
+            timeframe_sec=int(self.timeframe_var.get()),
+            candles_limit=int(self.limit_var.get()),
+            check_interval_sec=int(self.check_var.get()),
+            api_retry_delay_sec=int(self.retry_var.get()),
+        )
+
+    def start_bot(self) -> None:
+        if self.bot_thread and self.bot_thread.is_alive():
+            messagebox.showinfo("Інфо", "Бот уже запущений.")
+            return
+
+        try:
+            config = self._build_config()
+        except Exception as error:
+            messagebox.showerror("Помилка конфігурації", str(error))
+            return
+
+        self.stop_event.clear()
+
+        def _runner() -> None:
+            try:
+                run_signal_bot(config, self.stop_event, self.log)
+            except Exception as error:
+                self.log(f"[КРИТИЧНА ПОМИЛКА] {error}")
+
+        self.bot_thread = threading.Thread(target=_runner, daemon=True)
+        self.bot_thread.start()
+        self.log("Бот запущено.")
+
+    def stop_bot(self) -> None:
+        self.stop_event.set()
+        self.log("Запит на зупинку відправлено.")
+
+    def run(self) -> None:
+        self.root.mainloop()
+
+
+def main() -> None:
+    app = SignalBotGUI()
+    app.run()
 
 
 if __name__ == "__main__":
-    run()
+    main()
 
 # =========================
 # Інструкція запуску:
 # 1) Встановіть залежності:
 #    pip install pandas pocketoptionapi
-# 2) Впишіть свої дані в PO_EMAIL і PO_PASSWORD.
-# 3) За потреби змініть список POCKETOPTION_FOREX_PAIRS.
-# 4) Запустіть:
+# 2) Запустіть:
 #    python signal_bot_binance.py
+# 3) У GUI оберіть метод авторизації:
+#    - password: введіть Email + Password
+#    - google: вставте Google SSID (сесію)
 # =========================
