@@ -6,7 +6,8 @@ Signal Bot для Binance (лише аналіз, без відкриття уг
 - ccxt
 - pandas
 
-Бот завантажує OHLCV-дані, рахує EMA(9), EMA(21), RSI(14)
+Бот спочатку оцінює прибутковість списку пар, обирає одну пару
+для моніторингу, рахує EMA(9), EMA(21), RSI(14)
 та виводить сигнали BUY / SELL / NO SIGNAL у консоль.
 """
 
@@ -20,15 +21,41 @@ import pandas as pd
 # =========================
 # Константи налаштування
 # =========================
-SYMBOL = "BTC/USDT"          # Торгова пара
 TIMEFRAME = "5m"            # Таймфрейм свічок
 OHLCV_LIMIT = 150            # Кількість свічок для аналізу
 CHECK_INTERVAL_SEC = 20      # Пауза між перевірками (секунди)
 API_RETRY_DELAY_SEC = 10     # Пауза після API-помилки (секунди)
 
+# Список пар для аналізу прибутковості
+CANDIDATE_SYMBOLS = [
+    "BTC/USDT",
+    "ETH/USDT",
+    "BNB/USDT",
+    "SOL/USDT",
+    "XRP/USDT",
+]
+
+# Якщо True — автоматично беремо найприбутковішу пару.
+# Якщо False — користувач обирає пару з рейтингу вручну.
+AUTO_SELECT_BEST_PAIR = True
+
 EMA_FAST_PERIOD = 9
 EMA_SLOW_PERIOD = 21
 RSI_PERIOD = 14
+
+
+def calculate_profitability_percent(df: pd.DataFrame) -> float:
+    """Рахує прибутковість у % за доступну історію (від першого close до останнього)."""
+    if df.empty:
+        return float("-inf")
+
+    first_close = float(df.iloc[0]["close"])
+    last_close = float(df.iloc[-1]["close"])
+
+    if first_close == 0:
+        return float("-inf")
+
+    return ((last_close - first_close) / first_close) * 100
 
 
 def create_exchange() -> ccxt.binance:
@@ -56,6 +83,59 @@ def fetch_ohlcv_dataframe(
     )
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
     return df
+
+
+def analyze_symbols_profitability(
+    exchange: ccxt.binance,
+    symbols: list[str],
+    timeframe: str,
+    limit: int,
+) -> list[dict]:
+    """Аналізує прибутковість пар і повертає відсортований рейтинг."""
+    report = []
+
+    print("\nАналіз прибутковості кандидатів...", flush=True)
+
+    for symbol in symbols:
+        try:
+            ohlcv_df = fetch_ohlcv_dataframe(exchange, symbol, timeframe, limit)
+            profit_pct = calculate_profitability_percent(ohlcv_df)
+            report.append({"symbol": symbol, "profit_pct": profit_pct})
+            print(f"- {symbol}: {profit_pct:+.2f}%", flush=True)
+        except Exception as error:
+            print(f"- {symbol}: не вдалося отримати дані ({error})", flush=True)
+
+    report.sort(key=lambda item: item["profit_pct"], reverse=True)
+    return report
+
+
+def choose_symbol_from_profitability(report: list[dict]) -> str:
+    """Обирає пару: автоматично найкращу або вручну з рейтингу."""
+    if not report:
+        raise RuntimeError("Немає доступних пар для аналізу.")
+
+    print("\nРейтинг пар за прибутковістю:", flush=True)
+    for index, item in enumerate(report, start=1):
+        print(f"{index}. {item['symbol']} ({item['profit_pct']:+.2f}%)", flush=True)
+
+    if AUTO_SELECT_BEST_PAIR:
+        best_symbol = report[0]["symbol"]
+        print(f"\nАвтовибір: {best_symbol}", flush=True)
+        return best_symbol
+
+    while True:
+        user_input = input("\nВведіть номер пари для моніторингу: ").strip()
+        if not user_input.isdigit():
+            print("Введіть коректне число.", flush=True)
+            continue
+
+        choice = int(user_input)
+        if 1 <= choice <= len(report):
+            chosen_symbol = report[choice - 1]["symbol"]
+            print(f"Обрано: {chosen_symbol}", flush=True)
+            return chosen_symbol
+
+        print("Номер поза межами списку.", flush=True)
 
 
 def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -157,6 +237,14 @@ def run_signal_bot() -> None:
     """Основний цикл роботи signal bot."""
     exchange = create_exchange()
 
+    profitability_report = analyze_symbols_profitability(
+        exchange=exchange,
+        symbols=CANDIDATE_SYMBOLS,
+        timeframe=TIMEFRAME,
+        limit=OHLCV_LIMIT,
+    )
+    selected_symbol = choose_symbol_from_profitability(profitability_report)
+
     # Зберігаємо останню свічку, на якій уже був надрукований BUY/SELL,
     # щоб уникати дублювання сигналу в межах тієї самої свічки.
     last_signal_candle_timestamp = None
@@ -164,7 +252,7 @@ def run_signal_bot() -> None:
 
     print("Запуск Binance Signal Bot (без відкриття угод)...", flush=True)
     print(
-        f"Пара: {SYMBOL} | Таймфрейм: {TIMEFRAME} | Інтервал перевірки: {CHECK_INTERVAL_SEC}с",
+        f"Пара: {selected_symbol} | Таймфрейм: {TIMEFRAME} | Інтервал перевірки: {CHECK_INTERVAL_SEC}с",
         flush=True,
     )
 
@@ -172,7 +260,7 @@ def run_signal_bot() -> None:
         try:
             market_df = fetch_ohlcv_dataframe(
                 exchange=exchange,
-                symbol=SYMBOL,
+                symbol=selected_symbol,
                 timeframe=TIMEFRAME,
                 limit=OHLCV_LIMIT,
             )
@@ -194,7 +282,7 @@ def run_signal_bot() -> None:
 
             print_status(
                 signal=signal,
-                symbol=SYMBOL,
+                symbol=selected_symbol,
                 timeframe=TIMEFRAME,
                 candle_time=candle_timestamp,
                 close_price=float(current["close"]),
