@@ -62,6 +62,15 @@ EMA_SLOW_PERIOD = 21
 RSI_PERIOD = 14
 
 
+POCKETOPTIONAPI_INSTALL_HELP = (
+    "Модуль pocketoptionapi не знайдено.\n"
+    "Спробуйте одну з команд у PowerShell:\n"
+    "1) py -m pip install git+https://github.com/ChipaDevTeam/PocketOptionAPI.git\n"
+    "2) py -m pip install git+https://github.com/pocketoptionapi/pocketoptionapi.git\n"
+    "Після встановлення перезапустіть програму."
+)
+
+
 @dataclass
 class BotConfig:
     auth_method: str
@@ -254,9 +263,7 @@ def launch_google_auth_and_get_ssid(log: Callable[[str], None]) -> str:
 def create_pocketoption_client(config: BotConfig) -> Any:
     """Створює клієнт Pocket Option з password/google режимом."""
     if PocketOption is None:
-        raise ImportError(
-            "Модуль pocketoptionapi не знайдено. Встановіть його з GitHub-репозиторію бібліотеки."
-        )
+        raise ImportError(POCKETOPTIONAPI_INSTALL_HELP)
 
     method = config.auth_method.lower().strip()
     if method == "password":
@@ -555,6 +562,9 @@ class SignalBotGUI:
         def runner() -> None:
             try:
                 run_signal_bot(config, self.stop_event, self.log)
+            except ImportError as error:
+                self.log(f"[ВІДСУТНЯ ЗАЛЕЖНІСТЬ] {error}")
+                self.root.after(0, lambda: messagebox.showerror("Відсутня залежність", str(error)))
             except Exception as error:
                 self.log(f"[КРИТИЧНА ПОМИЛКА] {error}")
 
@@ -579,7 +589,10 @@ if __name__ == "__main__":
 
 # Інструкція запуску:
 # 1) pip install pandas selenium
-# 2) Для ринкових даних також встановіть pocketoptionapi (з GitHub-джерела бібліотеки).
+# 2) Для ринкових даних встановіть pocketoptionapi (одна з команд):
+#    py -m pip install git+https://github.com/ChipaDevTeam/PocketOptionAPI.git
+#    або
+#    py -m pip install git+https://github.com/pocketoptionapi/pocketoptionapi.git
 # 3) Переконайтесь, що встановлено Microsoft Edge і msedgedriver (додайте в PATH або EDGE_DRIVER_PATH).
 # 4) Опційно для авто-завантаження драйвера: pip install webdriver-manager
 # 5) python signal_bot_binance.py
