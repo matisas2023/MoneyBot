@@ -23,10 +23,23 @@ import pandas as pd
 import tkinter as tk
 from tkinter import ttk, messagebox
 
+POCKETOPTION_IMPORT_ERROR: Exception | None = None
+
 try:
-    from pocketoptionapi.stable_api import PocketOption
-except ImportError:
-    PocketOption = None
+    from pocketoptionapi.stable_api import PocketOption  # type: ignore
+except Exception as exc_primary:
+    try:
+        # Деякі форки експортують API через iqoptionapi-стиль модуля
+        from pocketoptionapi.api import PocketOption  # type: ignore
+    except Exception as exc_secondary:
+        try:
+            # Сумісність з альтернативною назвою пакета (часта помилка в репозиторіях)
+            from pocketoption_api.stable_api import PocketOption  # type: ignore
+        except Exception as exc_third:
+            PocketOption = None
+            POCKETOPTION_IMPORT_ERROR = Exception(
+                f"primary={exc_primary}; secondary={exc_secondary}; third={exc_third}"
+            )
 
 try:
     from selenium import webdriver
@@ -64,10 +77,13 @@ RSI_PERIOD = 14
 
 
 POCKETOPTIONAPI_INSTALL_HELP = (
-    "Модуль pocketoptionapi не знайдено.\n"
+    "Модуль Pocket Option API не знайдено у поточному Python-оточенні.\n"
+    "Перевірте, що встановлення виконано саме в цей Python (py -m pip ...).\n"
     "Спробуйте одну з команд у PowerShell:\n"
     "1) py -m pip install git+https://github.com/ChipaDevTeam/PocketOptionAPI.git\n"
     "2) py -m pip install git+https://github.com/pocketoptionapi/pocketoptionapi.git\n"
+    "3) py -m pip install pocketoption-api\n"
+    "Також перевірте імпорт у консолі: py -c \"import pocketoptionapi; print(\'ok\')\"\n"
     "Після встановлення перезапустіть програму."
 )
 
@@ -267,7 +283,8 @@ def launch_google_auth_and_get_ssid(log: Callable[[str], None]) -> str:
 def create_pocketoption_client(config: BotConfig) -> Any:
     """Створює клієнт Pocket Option з password/google режимом."""
     if PocketOption is None:
-        raise ImportError(POCKETOPTIONAPI_INSTALL_HELP)
+        details = f"\nДеталі імпорту: {POCKETOPTION_IMPORT_ERROR}" if POCKETOPTION_IMPORT_ERROR else ""
+        raise ImportError(POCKETOPTIONAPI_INSTALL_HELP + details)
 
     method = config.auth_method.lower().strip()
     if method == "password":
@@ -594,10 +611,12 @@ if __name__ == "__main__":
 
 # Інструкція запуску:
 # 1) pip install pandas selenium
-# 2) Для ринкових даних встановіть pocketoptionapi (одна з команд):
+# 2) Для ринкових даних встановіть API (одна з команд):
 #    py -m pip install git+https://github.com/ChipaDevTeam/PocketOptionAPI.git
 #    або
 #    py -m pip install git+https://github.com/pocketoptionapi/pocketoptionapi.git
+#    або
+#    py -m pip install pocketoption-api
 # 3) Переконайтесь, що встановлено Microsoft Edge і msedgedriver (додайте в PATH або EDGE_DRIVER_PATH).
 # 4) Опційно для авто-завантаження драйвера: pip install webdriver-manager
 # 5) python signal_bot_binance.py
