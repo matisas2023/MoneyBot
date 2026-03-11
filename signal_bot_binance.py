@@ -1,17 +1,15 @@
 """
-Signal Bot для Pocket Option (analysis-only) на базі binaryoptionstoolsv2.
+Signal Bot для Pocket Option (analysis-only) на базі BinaryOptionsToolsV2.
 
 Що змінено:
-- Бібліотека для API: binaryoptionstoolsv2 (замість pocketoptionapi).
+- Бібліотека для API: BinaryOptionsToolsV2 (замість pocketoptionapi).
 - Працює тільки як signal-bot: BUY / SELL / NO SIGNAL, без відкриття угод.
 - GUI на Tkinter + Google auth (через SSID cookie з Edge).
 """
 
-import importlib
 import os
 import shutil
 import subprocess
-import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -23,41 +21,22 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 # =========================
-# API import: binaryoptionstoolsv2
+# API import: BinaryOptionsToolsV2
 # =========================
-BOTSV2_IMPORT_ERROR: Exception | None = None
-BinaryOptionsToolsV2Client = None
+try:
+    from BinaryOptionsToolsV2.pocketoption import PocketOption
+except ImportError:
+    print("Library BinaryOptionsToolsV2 not installed")
+    print("Run: pip install binaryoptionstoolsv2")
+    raise SystemExit()
 
+# Мінімальний приклад підключення:
+# client = PocketOption(ssid="YOUR_SESSION_ID")
 
-def load_binaryoptions_client() -> tuple[Any, Exception | None]:
-    """Пробує знайти Pocket Option client у різних варіантах назв пакетів/форків."""
-    import_attempts: list[str] = []
-
-    candidates = [
-        ("binaryoptionstoolsv2.pocketoption", "PocketOptionClient"),
-        ("binaryoptionstoolsv2.client", "PocketOptionClient"),
-        ("binaryoptionstoolsv2", "PocketOptionClient"),
-        # Поширений варіант назви без літери 's'
-        ("binaryoptiontoolsv2.pocketoption", "PocketOptionClient"),
-        ("binaryoptiontoolsv2.client", "PocketOptionClient"),
-        ("binaryoptiontoolsv2", "PocketOptionClient"),
-        # Додаткові fallback-імена класу
-        ("binaryoptionstoolsv2.pocketoption", "PocketOption"),
-        ("binaryoptionstoolsv2.client", "PocketOption"),
-    ]
-
-    for module_name, attr_name in candidates:
-        try:
-            module = importlib.import_module(module_name)
-            cls = getattr(module, attr_name)
-            return cls, None
-        except Exception as exc:
-            import_attempts.append(f"{module_name}:{attr_name} -> {exc}")
-
-    return None, Exception(" | ".join(import_attempts))
-
-
-BinaryOptionsToolsV2Client, BOTSV2_IMPORT_ERROR = load_binaryoptions_client()
+BOTSV2_INSTALL_HELP = (
+    "Library BinaryOptionsToolsV2 not installed.\n"
+    "Run: pip install binaryoptionstoolsv2"
+)
 
 # =========================
 # Selenium imports (Edge)
@@ -93,17 +72,6 @@ EMA_FAST_PERIOD = 9
 EMA_SLOW_PERIOD = 21
 RSI_PERIOD = 14
 
-BOTSV2_INSTALL_HELP = (
-    "Модуль binaryoptionstoolsv2 (або binaryoptiontoolsv2) не знайдено у поточному Python-оточенні.\n"
-    f"Поточний Python: {sys.executable}\n"
-    "Спробуйте одну з команд:\n"
-    "1) py -m pip install binaryoptionstoolsv2\n"
-    "2) py -m pip install binaryoptiontoolsv2\n"
-    "3) py -m pip install git+https://github.com/<repo>/binaryoptionstoolsv2.git\n"
-    "Перевірка імпорту: py -c \"import binaryoptionstoolsv2; print('ok')\"\n"
-    "Альтернатива: py -c \"import binaryoptiontoolsv2; print('ok')\"\n"
-    "Після встановлення перезапустіть програму."
-)
 
 
 @dataclass
@@ -120,7 +88,7 @@ class BotConfig:
 
 
 class PocketOptionDataClient:
-    """Уніфікований адаптер над binaryoptionstoolsv2 для різних форків/сигнатур."""
+    """Уніфікований адаптер над BinaryOptionsToolsV2 для різних форків/сигнатур."""
 
     def __init__(self, raw_client: Any):
         self.raw_client = raw_client
@@ -246,13 +214,6 @@ def launch_google_auth_and_get_ssid(log: Callable[[str], None]) -> str:
 
 
 def create_pocketoption_client(config: BotConfig) -> PocketOptionDataClient:
-    global BinaryOptionsToolsV2Client, BOTSV2_IMPORT_ERROR
-    if BinaryOptionsToolsV2Client is None:
-        BinaryOptionsToolsV2Client, BOTSV2_IMPORT_ERROR = load_binaryoptions_client()
-
-    if BinaryOptionsToolsV2Client is None:
-        details = f"\nДеталі імпорту: {BOTSV2_IMPORT_ERROR}" if BOTSV2_IMPORT_ERROR else ""
-        raise ImportError(BOTSV2_INSTALL_HELP + details)
 
     method = config.auth_method.lower().strip()
     if method == "google":
@@ -260,23 +221,24 @@ def create_pocketoption_client(config: BotConfig) -> PocketOptionDataClient:
             raise ValueError("Спочатку виконайте Google-авторизацію (отримайте SSID).")
         # можливі сигнатури різних збірок
         try:
-            raw_client = BinaryOptionsToolsV2Client(ssid=config.google_ssid)
+            raw_client = PocketOption(ssid=config.google_ssid)
         except TypeError:
             try:
-                raw_client = BinaryOptionsToolsV2Client(config.google_ssid)
+                raw_client = PocketOption(config.google_ssid)
             except TypeError:
-                raw_client = BinaryOptionsToolsV2Client("", "", config.google_ssid)
+                raw_client = PocketOption("", "", config.google_ssid)
     else:
         if not config.email or not config.password:
             raise ValueError("Для password-режиму потрібні email та password.")
         try:
-            raw_client = BinaryOptionsToolsV2Client(email=config.email, password=config.password)
+            raw_client = PocketOption(email=config.email, password=config.password)
         except TypeError:
-            raw_client = BinaryOptionsToolsV2Client(config.email, config.password)
+            raw_client = PocketOption(config.email, config.password)
 
+    print("PocketOption client initialized")
     client = PocketOptionDataClient(raw_client)
     if not client.connect():
-        raise ConnectionError("Не вдалося підключитися до Pocket Option через binaryoptionstoolsv2.")
+        raise ConnectionError("Не вдалося підключитися до Pocket Option через BinaryOptionsToolsV2.")
     return client
 
 
@@ -408,7 +370,7 @@ def run_signal_bot(config: BotConfig, stop_event: threading.Event, log: Callable
 class SignalBotGUI:
     def __init__(self) -> None:
         self.root = tk.Tk()
-        self.root.title("Pocket Option Signal Bot (binaryoptionstoolsv2)")
+        self.root.title("Pocket Option Signal Bot (BinaryOptionsToolsV2)")
         self.root.geometry("950x680")
 
         self.stop_event = threading.Event()
@@ -565,7 +527,6 @@ if __name__ == "__main__":
 # Інструкція запуску:
 # 1) py -m pip install pandas selenium
 # 2) Встановіть API: py -m pip install binaryoptionstoolsv2
-#    або: py -m pip install binaryoptiontoolsv2
 # 3) Переконайтесь, що встановлено Microsoft Edge і msedgedriver (PATH або EDGE_DRIVER_PATH)
 # 4) Опційно: py -m pip install webdriver-manager
 # 5) python signal_bot_binance.py
