@@ -1,13 +1,10 @@
 """
-Signal Bot для POCKET OPTION (лише аналіз, без відкриття угод) з GUI.
+Signal Bot для Pocket Option (analysis-only) на базі binaryoptionstoolsv2.
 
-Нове:
-- Кнопка "Авторизуватися через Google" (без ручного вводу email/password у GUI).
-- Автоматичне отримання SSID cookie після входу через браузер.
-
-Примітка:
-- Pocket Option не має офіційного Python SDK.
-- Для ринкових даних використовується community-клієнт `pocketoptionapi` (опційно).
+Що змінено:
+- Бібліотека для API: binaryoptionstoolsv2 (замість pocketoptionapi).
+- Працює тільки як signal-bot: BUY / SELL / NO SIGNAL, без відкриття угод.
+- GUI на Tkinter + Google auth (через SSID cookie з Edge).
 """
 
 import os
@@ -23,24 +20,26 @@ import pandas as pd
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-POCKETOPTION_IMPORT_ERROR: Exception | None = None
+# =========================
+# API import: binaryoptionstoolsv2
+# =========================
+BOTSV2_IMPORT_ERROR: Exception | None = None
+BinaryOptionsToolsV2Client = None
 
 try:
-    from pocketoptionapi.stable_api import PocketOption  # type: ignore
-except Exception as exc_primary:
+    from binaryoptionstoolsv2.pocketoption import PocketOptionClient as BinaryOptionsToolsV2Client  # type: ignore
+except Exception as exc_a:
     try:
-        # Деякі форки експортують API через iqoptionapi-стиль модуля
-        from pocketoptionapi.api import PocketOption  # type: ignore
-    except Exception as exc_secondary:
+        from binaryoptionstoolsv2.client import PocketOptionClient as BinaryOptionsToolsV2Client  # type: ignore
+    except Exception as exc_b:
         try:
-            # Сумісність з альтернативною назвою пакета (часта помилка в репозиторіях)
-            from pocketoption_api.stable_api import PocketOption  # type: ignore
-        except Exception as exc_third:
-            PocketOption = None
-            POCKETOPTION_IMPORT_ERROR = Exception(
-                f"primary={exc_primary}; secondary={exc_secondary}; third={exc_third}"
-            )
+            from binaryoptionstoolsv2 import PocketOptionClient as BinaryOptionsToolsV2Client  # type: ignore
+        except Exception as exc_c:
+            BOTSV2_IMPORT_ERROR = Exception(f"a={exc_a}; b={exc_b}; c={exc_c}")
 
+# =========================
+# Selenium imports (Edge)
+# =========================
 try:
     from selenium import webdriver
     from selenium.webdriver.common.by import By
@@ -66,24 +65,18 @@ DEFAULT_CANDLES_LIMIT = 150
 DEFAULT_CHECK_INTERVAL_SEC = 20
 DEFAULT_API_RETRY_DELAY_SEC = 10
 
-DEFAULT_FOREX_PAIRS = [
-    "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD",
-    "USDCAD", "NZDUSD", "EURJPY", "GBPJPY", "EURGBP",
-]
+DEFAULT_FOREX_PAIRS = ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD"]
 
 EMA_FAST_PERIOD = 9
 EMA_SLOW_PERIOD = 21
 RSI_PERIOD = 14
 
-
-POCKETOPTIONAPI_INSTALL_HELP = (
-    "Модуль Pocket Option API не знайдено у поточному Python-оточенні.\n"
-    "Перевірте, що встановлення виконано саме в цей Python (py -m pip ...).\n"
-    "Спробуйте одну з команд у PowerShell:\n"
-    "1) py -m pip install git+https://github.com/ChipaDevTeam/PocketOptionAPI.git\n"
-    "2) py -m pip install git+https://github.com/pocketoptionapi/pocketoptionapi.git\n"
-    "3) py -m pip install pocketoption-api\n"
-    "Також перевірте імпорт у консолі: py -c \"import pocketoptionapi; print(\'ok\')\"\n"
+BOTSV2_INSTALL_HELP = (
+    "Модуль binaryoptionstoolsv2 не знайдено у поточному Python-оточенні.\n"
+    "Спробуйте одну з команд:\n"
+    "1) py -m pip install binaryoptionstoolsv2\n"
+    "2) py -m pip install git+https://github.com/<repo>/binaryoptionstoolsv2.git\n"
+    "Перевірка імпорту: py -c \"import binaryoptionstoolsv2; print('ok')\"\n"
     "Після встановлення перезапустіть програму."
 )
 
@@ -95,17 +88,46 @@ class BotConfig:
     password: str
     google_ssid: str
     pairs: list[str]
-    auto_select_best_pair: bool
     timeframe_sec: int
     candles_limit: int
     check_interval_sec: int
     api_retry_delay_sec: int
 
 
+class PocketOptionDataClient:
+    """Уніфікований адаптер над binaryoptionstoolsv2 для різних форків/сигнатур."""
+
+    def __init__(self, raw_client: Any):
+        self.raw_client = raw_client
+
+    def connect(self) -> bool:
+        for name in ("connect", "login", "start"):
+            fn = getattr(self.raw_client, name, None)
+            if callable(fn):
+                result = fn()
+                return True if result is None else bool(result)
+        return True
+
+    def get_candles(self, symbol: str, timeframe_sec: int, start_time: int, end_time: int):
+        # Найпоширеніші варіанти методу в різних версіях/форках
+        method_candidates = ["get_candles", "candles", "fetch_candles", "get_history"]
+        for name in method_candidates:
+            fn = getattr(self.raw_client, name, None)
+            if not callable(fn):
+                continue
+            try:
+                return fn(symbol, timeframe_sec, start_time, end_time)
+            except TypeError:
+                try:
+                    return fn(symbol=symbol, timeframe=timeframe_sec, start=start_time, end=end_time)
+                except TypeError:
+                    continue
+        raise AttributeError("У client не знайдено сумісний метод отримання свічок.")
+
+
 def build_edge_driver(log: Callable[[str], None]):
-    """Створює Edge WebDriver без обов'язкового доступу до мережі."""
     if webdriver is None or Service is None:
-        raise ImportError("Для Google-авторизації встановіть: pip install selenium")
+        raise ImportError("Для Google-авторизації встановіть: py -m pip install selenium")
 
     options = Options()
     options.add_argument("--disable-blink-features=AutomationControlled")
@@ -113,166 +135,84 @@ def build_edge_driver(log: Callable[[str], None]):
     options.add_argument("--disable-logging")
     options.add_argument("--disable-gpu")
     options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
-    options.add_experimental_option("useAutomationExtension", False)
 
-    # 1) Пріоритет: EDGE_DRIVER_PATH з оточення (повністю офлайн)
     edge_driver_path = os.getenv("EDGE_DRIVER_PATH", "").strip()
     if edge_driver_path:
-        log(f"Спроба запуску EdgeDriver з EDGE_DRIVER_PATH: {edge_driver_path}")
         return webdriver.Edge(service=Service(edge_driver_path, log_output=subprocess.DEVNULL), options=options)
 
-    # 2) Пошук msedgedriver у PATH (офлайн)
     path_driver = shutil.which("msedgedriver")
     if path_driver:
-        log(f"Знайдено msedgedriver у PATH: {path_driver}")
         return webdriver.Edge(service=Service(path_driver, log_output=subprocess.DEVNULL), options=options)
 
-    # 3) Selenium Manager (може спрацювати локально; інколи потребує мережу)
     try:
         log("Пробую Selenium Manager для запуску Edge...")
         return webdriver.Edge(options=options)
-    except Exception as error:
-        log(f"Selenium Manager не спрацював: {error}")
+    except Exception:
+        pass
 
-    # 4) webdriver-manager як останній fallback (потрібна мережа)
     if EdgeChromiumDriverManager is not None:
-        log("Пробую webdriver-manager (потрібен інтернет для завантаження драйвера)...")
         driver_path = EdgeChromiumDriverManager().install()
         return webdriver.Edge(service=Service(driver_path, log_output=subprocess.DEVNULL), options=options)
 
-    raise RuntimeError(
-        "Не вдалося запустити Edge WebDriver офлайн. "
-        "Встановіть msedgedriver і додайте в PATH або задайте EDGE_DRIVER_PATH."
-    )
+    raise RuntimeError("Не вдалося запустити Edge WebDriver. Додайте msedgedriver в PATH або EDGE_DRIVER_PATH.")
 
 
 def extract_session_token_from_cookies(cookies: list[dict]) -> Optional[str]:
-    """Повертає значення сесійної cookie Pocket Option, якщо знайдено."""
-    priority_names = ["ssid", "session", "sessionid", "connect.sid", "ci_session"]
-
-    lowered = {c.get("name", "").lower(): c.get("value", "") for c in cookies}
-    for name in priority_names:
-        value = lowered.get(name, "")
-        if value:
-            return value
-
-    # fallback: будь-яка cookie, що містить "sid" або "session" у назві
+    for key in ("ssid", "session", "sessionid", "connect.sid", "ci_session"):
+        for cookie in cookies:
+            if cookie.get("name", "").lower() == key and cookie.get("value"):
+                return cookie["value"]
     for cookie in cookies:
-        cname = cookie.get("name", "").lower()
-        cval = cookie.get("value", "")
-        if cval and ("sid" in cname or "session" in cname):
-            return cval
+        name = cookie.get("name", "").lower()
+        if cookie.get("value") and ("sid" in name or "session" in name):
+            return cookie.get("value")
     return None
 
 
-def get_token_if_logged_in(driver: Any) -> Optional[str]:
-    """Перевіряє, чи вже є сесійна cookie на pocketoption.com."""
-    cookies = driver.get_cookies()
-    return extract_session_token_from_cookies(cookies)
-
-
 def launch_google_auth_and_get_ssid(log: Callable[[str], None]) -> str:
-    """Відкриває браузер, дає увійти через Google і забирає SSID cookie автоматично."""
-    if webdriver is None:
-        raise ImportError(
-            "Для Google-авторизації встановіть: pip install selenium"
-        )
-
-    log("Запуск браузера для Google-авторизації...")
-
     driver = build_edge_driver(log)
     driver.maximize_window()
-
     try:
         driver.get("https://pocketoption.com/en/login/")
-        log("Відкрито сторінку логіну Pocket Option.")
-
-        # Працюємо з ширшим набором селекторів для Google-кнопки
-        google_selectors = [
-            "button[data-provider='google']",
-            "a[data-provider='google']",
-            "button.google",
-            "a.google",
-            "a[href*='google']",
-            "button[aria-label*='Google']",
+        selectors = [
+            "button[data-provider='google']", "a[data-provider='google']", "a[href*='google']",
             "//*[contains(translate(text(),'GOOGLE','google'),'google')]",
-            "//*[contains(@aria-label, 'Google')]",
         ]
-
-        clicked = False
-        for selector in google_selectors:
+        for selector in selectors:
             try:
                 if selector.startswith("//"):
-                    element = WebDriverWait(driver, 4).until(
-                        EC.presence_of_element_located((By.XPATH, selector))
-                    )
+                    el = WebDriverWait(driver, 4).until(EC.presence_of_element_located((By.XPATH, selector)))
                 else:
-                    element = WebDriverWait(driver, 4).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, selector))
-                    )
-
+                    el = WebDriverWait(driver, 4).until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
                 try:
-                    element.click()
+                    el.click()
                 except Exception:
-                    driver.execute_script("arguments[0].click();", element)
-                clicked = True
-                log("Натиснуто кнопку входу через Google.")
+                    driver.execute_script("arguments[0].click();", el)
                 break
             except Exception:
                 continue
 
-        if not clicked:
-            log("Не знайдено кнопку Google автоматично. Увійдіть вручну у відкритому браузері.")
-
-        # Чекаємо, поки з'явиться сесійна cookie після успішного входу
         log("Очікування завершення входу (до 240 сек)...")
         deadline = time.time() + 240
-        was_on_google = False
-        last_phase_log = 0.0
-
+        phase_last_log = 0.0
         while time.time() < deadline:
             try:
-                current_url = driver.current_url.lower()
-
-                # Якщо вже залогінений (навіть без явного переходу через Google)
-                token = get_token_if_logged_in(driver)
+                token = extract_session_token_from_cookies(driver.get_cookies())
                 if token:
                     log("Авторизація підтверджена, сесійний токен отримано.")
                     return token
 
                 now = time.time()
-                if "accounts.google.com" in current_url:
-                    was_on_google = True
-                    if now - last_phase_log >= 10:
-                        log("Виконується вхід у Google...")
-                        last_phase_log = now
-                elif "pocketoption.com" in current_url:
-                    # Повернулися на домен PO, пробуємо оновити сторінку для актуалізації cookie
-                    if was_on_google:
-                        if now - last_phase_log >= 10:
-                            log("Повернення на Pocket Option, перевіряю сесію...")
-                            last_phase_log = now
-                        try:
-                            driver.refresh()
-                        except Exception:
-                            pass
-                else:
-                    if now - last_phase_log >= 15:
-                        log("Очікування завершення авторизації у браузері...")
-                        last_phase_log = now
-
+                if now - phase_last_log >= 10:
+                    log("Очікування авторизації в браузері...")
+                    phase_last_log = now
             except InvalidSessionIdException:
-                raise RuntimeError(
-                    "Сесія браузера Edge була закрита. Не закривайте вікно під час авторизації."
-                )
+                raise RuntimeError("Сесія Edge закрита під час авторизації.")
             except WebDriverException as error:
-                raise RuntimeError(f"Помилка WebDriver під час авторизації: {error}")
-
+                raise RuntimeError(f"Помилка WebDriver: {error}")
             time.sleep(1)
 
-        raise TimeoutError(
-            "Не вдалося підтвердити сесію. Після Google-входу перевірте, що відкрився ваш кабінет Pocket Option."
-        )
+        raise TimeoutError("Не вдалося отримати сесію після Google-входу.")
     finally:
         try:
             driver.quit()
@@ -280,40 +220,41 @@ def launch_google_auth_and_get_ssid(log: Callable[[str], None]) -> str:
             pass
 
 
-def create_pocketoption_client(config: BotConfig) -> Any:
-    """Створює клієнт Pocket Option з password/google режимом."""
-    if PocketOption is None:
-        details = f"\nДеталі імпорту: {POCKETOPTION_IMPORT_ERROR}" if POCKETOPTION_IMPORT_ERROR else ""
-        raise ImportError(POCKETOPTIONAPI_INSTALL_HELP + details)
+def create_pocketoption_client(config: BotConfig) -> PocketOptionDataClient:
+    if BinaryOptionsToolsV2Client is None:
+        details = f"\nДеталі імпорту: {BOTSV2_IMPORT_ERROR}" if BOTSV2_IMPORT_ERROR else ""
+        raise ImportError(BOTSV2_INSTALL_HELP + details)
 
     method = config.auth_method.lower().strip()
-    if method == "password":
-        if not config.email or not config.password:
-            raise ValueError("Для password-авторизації потрібні email + password.")
-        client = PocketOption(config.email, config.password)
-    elif method == "google":
+    if method == "google":
         if not config.google_ssid:
-            raise ValueError("Спочатку натисніть кнопку Google-авторизації, щоб отримати SSID.")
+            raise ValueError("Спочатку виконайте Google-авторизацію (отримайте SSID).")
+        # можливі сигнатури різних збірок
         try:
-            client = PocketOption(config.google_ssid)
+            raw_client = BinaryOptionsToolsV2Client(ssid=config.google_ssid)
         except TypeError:
             try:
-                client = PocketOption(ssid=config.google_ssid)
+                raw_client = BinaryOptionsToolsV2Client(config.google_ssid)
             except TypeError:
-                client = PocketOption("", "", config.google_ssid)
+                raw_client = BinaryOptionsToolsV2Client("", "", config.google_ssid)
     else:
-        raise ValueError("Невідомий метод авторизації.")
+        if not config.email or not config.password:
+            raise ValueError("Для password-режиму потрібні email та password.")
+        try:
+            raw_client = BinaryOptionsToolsV2Client(email=config.email, password=config.password)
+        except TypeError:
+            raw_client = BinaryOptionsToolsV2Client(config.email, config.password)
 
+    client = PocketOptionDataClient(raw_client)
     if not client.connect():
-        raise ConnectionError("Не вдалося підключитися до Pocket Option.")
+        raise ConnectionError("Не вдалося підключитися до Pocket Option через binaryoptionstoolsv2.")
     return client
 
 
-def fetch_ohlc_dataframe(client: Any, symbol: str, timeframe_sec: int, limit: int) -> pd.DataFrame:
+def fetch_ohlc_dataframe(client: PocketOptionDataClient, symbol: str, timeframe_sec: int, limit: int) -> pd.DataFrame:
     end_time = int(time.time())
     start_time = end_time - timeframe_sec * limit
     candles = client.get_candles(symbol, timeframe_sec, start_time, end_time)
-
     if not candles:
         raise ValueError(f"Не отримано свічок для {symbol}.")
 
@@ -321,7 +262,6 @@ def fetch_ohlc_dataframe(client: Any, symbol: str, timeframe_sec: int, limit: in
         "from": "timestamp", "time": "timestamp", "t": "timestamp",
         "o": "open", "h": "high", "l": "low", "c": "close",
     })
-
     required = {"timestamp", "open", "high", "low", "close"}
     if not required.issubset(df.columns):
         raise ValueError(f"Некоректний формат свічок: {list(df.columns)}")
@@ -330,7 +270,6 @@ def fetch_ohlc_dataframe(client: Any, symbol: str, timeframe_sec: int, limit: in
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s", utc=True)
     for col in ["open", "high", "low", "close"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
-
     return df.dropna().sort_values("timestamp").reset_index(drop=True)
 
 
@@ -344,15 +283,15 @@ def calculate_profitability_percent(df: pd.DataFrame) -> float:
     return ((last_close - first_close) / first_close) * 100
 
 
-def analyze_pairs_profitability(client: Any, pairs: list[str], timeframe_sec: int, limit: int, log: Callable[[str], None]) -> list[dict]:
+def analyze_pairs_profitability(client: PocketOptionDataClient, pairs: list[str], timeframe_sec: int, limit: int, log: Callable[[str], None]) -> list[dict]:
     report = []
     log("Аналіз прибутковості пар...")
     for pair in pairs:
         try:
             df = fetch_ohlc_dataframe(client, pair, timeframe_sec, limit)
-            profit = calculate_profitability_percent(df)
-            report.append({"symbol": pair, "profit_pct": profit})
-            log(f"- {pair}: {profit:+.2f}%")
+            p = calculate_profitability_percent(df)
+            report.append({"symbol": pair, "profit_pct": p})
+            log(f"- {pair}: {p:+.2f}%")
         except Exception as error:
             log(f"- {pair}: помилка ({error})")
     report.sort(key=lambda x: x["profit_pct"], reverse=True)
@@ -369,7 +308,6 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
     loss = -delta.clip(upper=0)
     avg_gain = gain.rolling(window=RSI_PERIOD, min_periods=RSI_PERIOD).mean()
     avg_loss = loss.rolling(window=RSI_PERIOD, min_periods=RSI_PERIOD).mean()
-
     rs = avg_gain / avg_loss
     out["rsi"] = 100 - (100 / (1 + rs))
     return out
@@ -378,10 +316,7 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
 def detect_signal(df: pd.DataFrame) -> str:
     if len(df) < RSI_PERIOD + 2:
         return "NO SIGNAL"
-
-    prev_c = df.iloc[-2]
-    curr_c = df.iloc[-1]
-
+    prev_c, curr_c = df.iloc[-2], df.iloc[-1]
     if pd.isna(curr_c["rsi"]):
         return "NO SIGNAL"
 
@@ -397,7 +332,6 @@ def detect_signal(df: pd.DataFrame) -> str:
         and 30 <= curr_c["rsi"] <= 55
         and curr_c["close"] < curr_c["ema21"]
     )
-
     if buy:
         return "BUY"
     if sell:
@@ -407,24 +341,20 @@ def detect_signal(df: pd.DataFrame) -> str:
 
 def run_signal_bot(config: BotConfig, stop_event: threading.Event, log: Callable[[str], None]) -> None:
     client = create_pocketoption_client(config)
-    log("Підключення до Pocket Option успішне.")
-
     report = analyze_pairs_profitability(client, config.pairs, config.timeframe_sec, config.candles_limit, log)
     if not report:
-        raise RuntimeError("Не вдалося отримати дані по жодній парі.")
+        raise RuntimeError("Не вдалося отримати дані по парах.")
+    symbol = report[0]["symbol"]
+    log(f"Пара для моніторингу: {symbol}")
 
-    selected_pair = report[0]["symbol"]
-    log(f"Пара для моніторингу: {selected_pair}")
-
-    last_signal_ts: Optional[pd.Timestamp] = None
-    last_signal_type: Optional[str] = None
+    last_signal_ts = None
+    last_signal_type = None
 
     while not stop_event.is_set():
         try:
-            df = fetch_ohlc_dataframe(client, selected_pair, config.timeframe_sec, config.candles_limit)
+            df = fetch_ohlc_dataframe(client, symbol, config.timeframe_sec, config.candles_limit)
             df = calculate_indicators(df)
             signal = detect_signal(df)
-
             curr = df.iloc[-1]
             ts = curr["timestamp"]
 
@@ -435,12 +365,11 @@ def run_signal_bot(config: BotConfig, stop_event: threading.Event, log: Callable
 
             now_local = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             log(
-                f"[{now_local}] {selected_pair} | Candle: {ts.strftime('%Y-%m-%d %H:%M:%S UTC')} | "
+                f"[{now_local}] {symbol} | Candle: {ts.strftime('%Y-%m-%d %H:%M:%S UTC')} | "
                 f"Close: {float(curr['close']):.6f} | EMA9: {float(curr['ema9']):.6f} | "
                 f"EMA21: {float(curr['ema21']):.6f} | RSI: {float(curr['rsi']):.2f} | "
                 f"Signal: {signal}{' (дублікат пропущено)' if duplicate else ''}"
             )
-
             stop_event.wait(config.check_interval_sec)
         except Exception as error:
             log(f"[ПОМИЛКА API] {error}")
@@ -450,7 +379,7 @@ def run_signal_bot(config: BotConfig, stop_event: threading.Event, log: Callable
 class SignalBotGUI:
     def __init__(self) -> None:
         self.root = tk.Tk()
-        self.root.title("Pocket Option Signal Bot")
+        self.root.title("Pocket Option Signal Bot (binaryoptionstoolsv2)")
         self.root.geometry("950x680")
 
         self.stop_event = threading.Event()
@@ -466,27 +395,22 @@ class SignalBotGUI:
 
         ttk.Label(frame, text="Метод авторизації:").grid(row=0, column=0, sticky="w")
         self.auth_method_var = tk.StringVar(value="google")
-        ttk.Combobox(
-            frame, textvariable=self.auth_method_var,
-            values=["google", "password"], state="readonly"
-        ).grid(row=0, column=1, sticky="ew", padx=6, pady=4)
-
-        self.google_auth_button = ttk.Button(
-            frame,
-            text="Авторизуватися через Google",
-            command=self.google_auth_click,
+        ttk.Combobox(frame, textvariable=self.auth_method_var, values=["google", "password"], state="readonly").grid(
+            row=0, column=1, sticky="ew", padx=6, pady=4
         )
+
+        self.google_auth_button = ttk.Button(frame, text="Авторизуватися через Google", command=self.google_auth_click)
         self.google_auth_button.grid(row=1, column=0, columnspan=2, sticky="ew", padx=6, pady=4)
 
         ttk.Label(frame, text="Статус Google SSID:").grid(row=2, column=0, sticky="w")
         self.google_status_var = tk.StringVar(value="не отримано")
         ttk.Label(frame, textvariable=self.google_status_var).grid(row=2, column=1, sticky="w")
 
-        ttk.Label(frame, text="Email (для password-режиму):").grid(row=3, column=0, sticky="w")
+        ttk.Label(frame, text="Email (для password):").grid(row=3, column=0, sticky="w")
         self.email_var = tk.StringVar()
         ttk.Entry(frame, textvariable=self.email_var).grid(row=3, column=1, sticky="ew", padx=6, pady=4)
 
-        ttk.Label(frame, text="Password (для password-режиму):").grid(row=4, column=0, sticky="w")
+        ttk.Label(frame, text="Password (для password):").grid(row=4, column=0, sticky="w")
         self.password_var = tk.StringVar()
         ttk.Entry(frame, textvariable=self.password_var, show="*").grid(row=4, column=1, sticky="ew", padx=6, pady=4)
 
@@ -526,7 +450,7 @@ class SignalBotGUI:
 
     def google_auth_click(self) -> None:
         if self.google_auth_in_progress:
-            self.log("Google-авторизація вже виконується. Дочекайтесь завершення.")
+            self.log("Google-авторизація вже виконується.")
             return
 
         self.google_auth_in_progress = True
@@ -553,7 +477,7 @@ class SignalBotGUI:
     def _build_config(self) -> BotConfig:
         pairs = [x.strip().upper() for x in self.pairs_var.get().split(",") if x.strip()]
         if not pairs:
-            raise ValueError("Вкажіть хоча б одну валютну пару.")
+            raise ValueError("Вкажіть хоча б одну пару.")
 
         return BotConfig(
             auth_method=self.auth_method_var.get().strip().lower(),
@@ -561,7 +485,6 @@ class SignalBotGUI:
             password=self.password_var.get(),
             google_ssid=self.google_ssid_value,
             pairs=pairs,
-            auto_select_best_pair=True,
             timeframe_sec=int(self.timeframe_var.get()),
             candles_limit=int(self.limit_var.get()),
             check_interval_sec=int(self.check_var.get()),
@@ -572,6 +495,7 @@ class SignalBotGUI:
         if self.bot_thread and self.bot_thread.is_alive():
             messagebox.showinfo("Інфо", "Бот уже запущений.")
             return
+
         try:
             config = self._build_config()
         except Exception as error:
@@ -610,15 +534,8 @@ if __name__ == "__main__":
     main()
 
 # Інструкція запуску:
-# 1) pip install pandas selenium
-# 2) Для ринкових даних встановіть API (одна з команд):
-#    py -m pip install git+https://github.com/ChipaDevTeam/PocketOptionAPI.git
-#    або
-#    py -m pip install git+https://github.com/pocketoptionapi/pocketoptionapi.git
-#    або
-#    py -m pip install pocketoption-api
-# 3) Переконайтесь, що встановлено Microsoft Edge і msedgedriver (додайте в PATH або EDGE_DRIVER_PATH).
-# 4) Опційно для авто-завантаження драйвера: pip install webdriver-manager
+# 1) py -m pip install pandas selenium
+# 2) Встановіть API: py -m pip install binaryoptionstoolsv2
+# 3) Переконайтесь, що встановлено Microsoft Edge і msedgedriver (PATH або EDGE_DRIVER_PATH)
+# 4) Опційно: py -m pip install webdriver-manager
 # 5) python signal_bot_binance.py
-# 6) Натисніть "Авторизуватися через Google" і не закривайте Edge до завершення.
-# 7) Якщо кнопка Google не натиснулась автоматично — увійдіть вручну у відкритому вікні.
