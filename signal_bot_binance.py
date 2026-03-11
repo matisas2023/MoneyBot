@@ -30,9 +30,9 @@ try:
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
-    from selenium.webdriver.chrome.options import Options
-    from webdriver_manager.chrome import ChromeDriverManager
-    from selenium.webdriver.chrome.service import Service
+    from selenium.webdriver.edge.options import Options
+    from webdriver_manager.microsoft import EdgeChromiumDriverManager
+    from selenium.webdriver.edge.service import Service
 except ImportError:
     webdriver = None
 
@@ -80,7 +80,7 @@ def launch_google_auth_and_get_ssid(log: Callable[[str], None]) -> str:
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
 
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    driver = webdriver.Edge(service=Service(EdgeChromiumDriverManager().install()), options=options)
     driver.maximize_window()
 
     try:
@@ -448,5 +448,6 @@ if __name__ == "__main__":
 # Інструкція запуску:
 # 1) pip install pandas selenium webdriver-manager
 # 2) Для ринкових даних також встановіть pocketoptionapi (з GitHub-джерела бібліотеки).
-# 3) python signal_bot_binance.py
-# 4) Натисніть "Авторизуватися через Google" — SSID підтягнеться автоматично.
+# 3) Переконайтесь, що встановлено Microsoft Edge.
+# 4) python signal_bot_binance.py
+# 5) Натисніть "Авторизуватися через Google" — SSID підтягнеться автоматично.
