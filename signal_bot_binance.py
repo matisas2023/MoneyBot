@@ -12,6 +12,7 @@ Signal Bot для POCKET OPTION (лише аналіз, без відкритт�
 
 import os
 import shutil
+import subprocess
 import threading
 import time
 from dataclasses import dataclass
@@ -92,20 +93,23 @@ def build_edge_driver(log: Callable[[str], None]):
 
     options = Options()
     options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_argument("--log-level=3")
+    options.add_argument("--disable-logging")
+    options.add_argument("--disable-gpu")
+    options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
     options.add_experimental_option("useAutomationExtension", False)
 
     # 1) Пріоритет: EDGE_DRIVER_PATH з оточення (повністю офлайн)
     edge_driver_path = os.getenv("EDGE_DRIVER_PATH", "").strip()
     if edge_driver_path:
         log(f"Спроба запуску EdgeDriver з EDGE_DRIVER_PATH: {edge_driver_path}")
-        return webdriver.Edge(service=Service(edge_driver_path), options=options)
+        return webdriver.Edge(service=Service(edge_driver_path, log_output=subprocess.DEVNULL), options=options)
 
     # 2) Пошук msedgedriver у PATH (офлайн)
     path_driver = shutil.which("msedgedriver")
     if path_driver:
         log(f"Знайдено msedgedriver у PATH: {path_driver}")
-        return webdriver.Edge(service=Service(path_driver), options=options)
+        return webdriver.Edge(service=Service(path_driver, log_output=subprocess.DEVNULL), options=options)
 
     # 3) Selenium Manager (може спрацювати локально; інколи потребує мережу)
     try:
@@ -118,7 +122,7 @@ def build_edge_driver(log: Callable[[str], None]):
     if EdgeChromiumDriverManager is not None:
         log("Пробую webdriver-manager (потрібен інтернет для завантаження драйвера)...")
         driver_path = EdgeChromiumDriverManager().install()
-        return webdriver.Edge(service=Service(driver_path), options=options)
+        return webdriver.Edge(service=Service(driver_path, log_output=subprocess.DEVNULL), options=options)
 
     raise RuntimeError(
         "Не вдалося запустити Edge WebDriver офлайн. "
@@ -564,7 +568,8 @@ class SignalBotGUI:
                 run_signal_bot(config, self.stop_event, self.log)
             except ImportError as error:
                 self.log(f"[ВІДСУТНЯ ЗАЛЕЖНІСТЬ] {error}")
-                self.root.after(0, lambda: messagebox.showerror("Відсутня залежність", str(error)))
+                err_text = str(error)
+                self.root.after(0, lambda e=err_text: messagebox.showerror("Відсутня залежність", e))
             except Exception as error:
                 self.log(f"[КРИТИЧНА ПОМИЛКА] {error}")
 
