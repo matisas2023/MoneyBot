@@ -21,9 +21,13 @@ import pandas as pd
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-# Сумісність для бібліотек, які викликають deprecated logger.warn
-if not hasattr(logging.Logger, "warn"):
-    logging.Logger.warn = logging.Logger.warning  # type: ignore[attr-defined]
+# Налаштування logging + сумісність зі старим logger.warn
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+)
+logger = logging.getLogger(__name__)
+logging.Logger.warn = logging.Logger.warning  # type: ignore[attr-defined]
 
 
 def patch_logger_warn_compat(target: Any) -> None:
