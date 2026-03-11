@@ -117,6 +117,31 @@ def build_edge_driver(log: Callable[[str], None]):
     )
 
 
+def extract_session_token_from_cookies(cookies: list[dict]) -> Optional[str]:
+    """Повертає значення сесійної cookie Pocket Option, якщо знайдено."""
+    priority_names = ["ssid", "session", "sessionid", "connect.sid", "ci_session"]
+
+    lowered = {c.get("name", "").lower(): c.get("value", "") for c in cookies}
+    for name in priority_names:
+        value = lowered.get(name, "")
+        if value:
+            return value
+
+    # fallback: будь-яка cookie, що містить "sid" або "session" у назві
+    for cookie in cookies:
+        cname = cookie.get("name", "").lower()
+        cval = cookie.get("value", "")
+        if cval and ("sid" in cname or "session" in cname):
+            return cval
+    return None
+
+
+def get_token_if_logged_in(driver: Any) -> Optional[str]:
+    """Перевіряє, чи вже є сесійна cookie на pocketoption.com."""
+    cookies = driver.get_cookies()
+    return extract_session_token_from_cookies(cookies)
+
+
 def launch_google_auth_and_get_ssid(log: Callable[[str], None]) -> str:
     """Відкриває браузер, дає увійти через Google і забирає SSID cookie автоматично."""
     if webdriver is None:
@@ -170,21 +195,43 @@ def launch_google_auth_and_get_ssid(log: Callable[[str], None]) -> str:
         if not clicked:
             log("Не знайдено кнопку Google автоматично. Увійдіть вручну у відкритому браузері.")
 
-        # Чекаємо, поки з'явиться ssid cookie після успішного входу
+        # Чекаємо, поки з'явиться сесійна cookie після успішного входу
         log("Очікування завершення входу (до 240 сек)...")
         deadline = time.time() + 240
+        was_on_google = False
+        last_phase_log = 0.0
+
         while time.time() < deadline:
             try:
-                current_url = driver.current_url
-                if "accounts.google.com" in current_url:
-                    log("Виконується вхід у Google...")
+                current_url = driver.current_url.lower()
 
-                for cookie in driver.get_cookies():
-                    name = cookie.get("name", "").lower()
-                    if name in {"ssid", "session", "sessionid"} and cookie.get("value"):
-                        ssid = cookie["value"]
-                        log("Google-авторизація успішна, SSID отримано автоматично.")
-                        return ssid
+                # Якщо вже залогінений (навіть без явного переходу через Google)
+                token = get_token_if_logged_in(driver)
+                if token:
+                    log("Авторизація підтверджена, сесійний токен отримано.")
+                    return token
+
+                now = time.time()
+                if "accounts.google.com" in current_url:
+                    was_on_google = True
+                    if now - last_phase_log >= 10:
+                        log("Виконується вхід у Google...")
+                        last_phase_log = now
+                elif "pocketoption.com" in current_url:
+                    # Повернулися на домен PO, пробуємо оновити сторінку для актуалізації cookie
+                    if was_on_google:
+                        if now - last_phase_log >= 10:
+                            log("Повернення на Pocket Option, перевіряю сесію...")
+                            last_phase_log = now
+                        try:
+                            driver.refresh()
+                        except Exception:
+                            pass
+                else:
+                    if now - last_phase_log >= 15:
+                        log("Очікування завершення авторизації у браузері...")
+                        last_phase_log = now
+
             except InvalidSessionIdException:
                 raise RuntimeError(
                     "Сесія браузера Edge була закрита. Не закривайте вікно під час авторизації."
@@ -195,7 +242,7 @@ def launch_google_auth_and_get_ssid(log: Callable[[str], None]) -> str:
             time.sleep(1)
 
         raise TimeoutError(
-            "Не вдалося отримати SSID cookie. Після Google-входу дочекайтесь повернення на pocketoption.com."
+            "Не вдалося підтвердити сесію. Після Google-входу перевірте, що відкрився ваш кабінет Pocket Option."
         )
     finally:
         try:
