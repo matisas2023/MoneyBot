@@ -7,6 +7,7 @@ Signal Bot для Pocket Option (analysis-only) на базі BinaryOptionsTools
 - GUI на Tkinter + Google auth (через SSID cookie з Edge).
 """
 
+import logging
 import os
 import shutil
 import subprocess
@@ -19,6 +20,11 @@ from typing import Any, Callable, Optional
 import pandas as pd
 import tkinter as tk
 from tkinter import ttk, messagebox
+
+# Сумісність для бібліотек, які викликають deprecated logger.warn
+if not hasattr(logging.Logger, "warn"):
+    logging.Logger.warn = logging.Logger.warning  # type: ignore[attr-defined]
+
 
 # =========================
 # API import: BinaryOptionsToolsV2
