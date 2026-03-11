@@ -34,6 +34,7 @@ try:
     from selenium.webdriver.support import expected_conditions as EC
     from selenium.webdriver.edge.options import Options
     from selenium.webdriver.edge.service import Service
+    from selenium.common.exceptions import InvalidSessionIdException, WebDriverException
     try:
         from webdriver_manager.microsoft import EdgeChromiumDriverManager
     except ImportError:
@@ -42,6 +43,8 @@ except ImportError:
     webdriver = None
     Service = None
     EdgeChromiumDriverManager = None
+    InvalidSessionIdException = Exception
+    WebDriverException = Exception
 
 
 DEFAULT_TIMEFRAME_SEC = 300
@@ -130,28 +133,34 @@ def launch_google_auth_and_get_ssid(log: Callable[[str], None]) -> str:
         driver.get("https://pocketoption.com/en/login/")
         log("Відкрито сторінку логіну Pocket Option.")
 
-        # Працюємо з кількома можливими селекторами кнопки Google
+        # Працюємо з ширшим набором селекторів для Google-кнопки
         google_selectors = [
             "button[data-provider='google']",
             "a[data-provider='google']",
             "button.google",
             "a.google",
-            "//*[contains(text(), 'Google')]",
-            "//*[contains(text(), 'google')]",
+            "a[href*='google']",
+            "button[aria-label*='Google']",
+            "//*[contains(translate(text(),'GOOGLE','google'),'google')]",
+            "//*[contains(@aria-label, 'Google')]",
         ]
 
         clicked = False
         for selector in google_selectors:
             try:
                 if selector.startswith("//"):
-                    element = WebDriverWait(driver, 5).until(
-                        EC.element_to_be_clickable((By.XPATH, selector))
+                    element = WebDriverWait(driver, 4).until(
+                        EC.presence_of_element_located((By.XPATH, selector))
                     )
                 else:
-                    element = WebDriverWait(driver, 5).until(
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                    element = WebDriverWait(driver, 4).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, selector))
                     )
-                element.click()
+
+                try:
+                    element.click()
+                except Exception:
+                    driver.execute_script("arguments[0].click();", element)
                 clicked = True
                 log("Натиснуто кнопку входу через Google.")
                 break
@@ -159,23 +168,40 @@ def launch_google_auth_and_get_ssid(log: Callable[[str], None]) -> str:
                 continue
 
         if not clicked:
-            log("Не знайдено кнопку Google автоматично. Завершіть вхід вручну у відкритому браузері.")
+            log("Не знайдено кнопку Google автоматично. Увійдіть вручну у відкритому браузері.")
 
         # Чекаємо, поки з'явиться ssid cookie після успішного входу
-        log("Очікування завершення входу (до 180 сек)...")
-        deadline = time.time() + 180
+        log("Очікування завершення входу (до 240 сек)...")
+        deadline = time.time() + 240
         while time.time() < deadline:
-            for cookie in driver.get_cookies():
-                name = cookie.get("name", "").lower()
-                if name in {"ssid", "session", "sessionid"} and cookie.get("value"):
-                    ssid = cookie["value"]
-                    log("Google-авторизація успішна, SSID отримано автоматично.")
-                    return ssid
+            try:
+                current_url = driver.current_url
+                if "accounts.google.com" in current_url:
+                    log("Виконується вхід у Google...")
+
+                for cookie in driver.get_cookies():
+                    name = cookie.get("name", "").lower()
+                    if name in {"ssid", "session", "sessionid"} and cookie.get("value"):
+                        ssid = cookie["value"]
+                        log("Google-авторизація успішна, SSID отримано автоматично.")
+                        return ssid
+            except InvalidSessionIdException:
+                raise RuntimeError(
+                    "Сесія браузера Edge була закрита. Не закривайте вікно під час авторизації."
+                )
+            except WebDriverException as error:
+                raise RuntimeError(f"Помилка WebDriver під час авторизації: {error}")
+
             time.sleep(1)
 
-        raise TimeoutError("Не вдалося отримати SSID cookie після Google-авторизації.")
+        raise TimeoutError(
+            "Не вдалося отримати SSID cookie. Після Google-входу дочекайтесь повернення на pocketoption.com."
+        )
     finally:
-        driver.quit()
+        try:
+            driver.quit()
+        except Exception:
+            pass
 
 
 def create_pocketoption_client(config: BotConfig) -> Any:
@@ -355,6 +381,7 @@ class SignalBotGUI:
         self.stop_event = threading.Event()
         self.bot_thread: Optional[threading.Thread] = None
         self.google_ssid_value = ""
+        self.google_auth_in_progress = False
 
         self._build_form()
 
@@ -369,11 +396,12 @@ class SignalBotGUI:
             values=["google", "password"], state="readonly"
         ).grid(row=0, column=1, sticky="ew", padx=6, pady=4)
 
-        ttk.Button(
+        self.google_auth_button = ttk.Button(
             frame,
             text="Авторизуватися через Google",
             command=self.google_auth_click,
-        ).grid(row=1, column=0, columnspan=2, sticky="ew", padx=6, pady=4)
+        )
+        self.google_auth_button.grid(row=1, column=0, columnspan=2, sticky="ew", padx=6, pady=4)
 
         ttk.Label(frame, text="Статус Google SSID:").grid(row=2, column=0, sticky="w")
         self.google_status_var = tk.StringVar(value="не отримано")
@@ -422,6 +450,18 @@ class SignalBotGUI:
         self.root.after(0, lambda: (self.log_text.insert("end", text + "\n"), self.log_text.see("end")))
 
     def google_auth_click(self) -> None:
+        if self.google_auth_in_progress:
+            self.log("Google-авторизація вже виконується. Дочекайтесь завершення.")
+            return
+
+        self.google_auth_in_progress = True
+        self.google_auth_button.configure(state="disabled")
+        self.google_status_var.set("в процесі...")
+
+        def finish_ui() -> None:
+            self.google_auth_in_progress = False
+            self.google_auth_button.configure(state="normal")
+
         def worker() -> None:
             try:
                 ssid = launch_google_auth_and_get_ssid(self.log)
@@ -430,6 +470,8 @@ class SignalBotGUI:
             except Exception as error:
                 self.log(f"[ПОМИЛКА GOOGLE AUTH] {error}")
                 self.root.after(0, lambda: self.google_status_var.set("помилка ❌"))
+            finally:
+                self.root.after(0, finish_ui)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -494,4 +536,5 @@ if __name__ == "__main__":
 # 3) Переконайтесь, що встановлено Microsoft Edge і msedgedriver (додайте в PATH або EDGE_DRIVER_PATH).
 # 4) Опційно для авто-завантаження драйвера: pip install webdriver-manager
 # 5) python signal_bot_binance.py
-# 6) Натисніть "Авторизуватися через Google" — SSID підтягнеться автоматично.
+# 6) Натисніть "Авторизуватися через Google" і не закривайте Edge до завершення.
+# 7) Якщо кнопка Google не натиснулась автоматично — увійдіть вручну у відкритому вікні.
