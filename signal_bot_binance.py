@@ -7,9 +7,11 @@ Signal Bot для Pocket Option (analysis-only) на базі binaryoptionstools
 - GUI на Tkinter + Google auth (через SSID cookie з Edge).
 """
 
+import importlib
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -26,16 +28,36 @@ from tkinter import ttk, messagebox
 BOTSV2_IMPORT_ERROR: Exception | None = None
 BinaryOptionsToolsV2Client = None
 
-try:
-    from binaryoptionstoolsv2.pocketoption import PocketOptionClient as BinaryOptionsToolsV2Client  # type: ignore
-except Exception as exc_a:
-    try:
-        from binaryoptionstoolsv2.client import PocketOptionClient as BinaryOptionsToolsV2Client  # type: ignore
-    except Exception as exc_b:
+
+def load_binaryoptions_client() -> tuple[Any, Exception | None]:
+    """Пробує знайти Pocket Option client у різних варіантах назв пакетів/форків."""
+    import_attempts: list[str] = []
+
+    candidates = [
+        ("binaryoptionstoolsv2.pocketoption", "PocketOptionClient"),
+        ("binaryoptionstoolsv2.client", "PocketOptionClient"),
+        ("binaryoptionstoolsv2", "PocketOptionClient"),
+        # Поширений варіант назви без літери 's'
+        ("binaryoptiontoolsv2.pocketoption", "PocketOptionClient"),
+        ("binaryoptiontoolsv2.client", "PocketOptionClient"),
+        ("binaryoptiontoolsv2", "PocketOptionClient"),
+        # Додаткові fallback-імена класу
+        ("binaryoptionstoolsv2.pocketoption", "PocketOption"),
+        ("binaryoptionstoolsv2.client", "PocketOption"),
+    ]
+
+    for module_name, attr_name in candidates:
         try:
-            from binaryoptionstoolsv2 import PocketOptionClient as BinaryOptionsToolsV2Client  # type: ignore
-        except Exception as exc_c:
-            BOTSV2_IMPORT_ERROR = Exception(f"a={exc_a}; b={exc_b}; c={exc_c}")
+            module = importlib.import_module(module_name)
+            cls = getattr(module, attr_name)
+            return cls, None
+        except Exception as exc:
+            import_attempts.append(f"{module_name}:{attr_name} -> {exc}")
+
+    return None, Exception(" | ".join(import_attempts))
+
+
+BinaryOptionsToolsV2Client, BOTSV2_IMPORT_ERROR = load_binaryoptions_client()
 
 # =========================
 # Selenium imports (Edge)
@@ -72,11 +94,14 @@ EMA_SLOW_PERIOD = 21
 RSI_PERIOD = 14
 
 BOTSV2_INSTALL_HELP = (
-    "Модуль binaryoptionstoolsv2 не знайдено у поточному Python-оточенні.\n"
+    "Модуль binaryoptionstoolsv2 (або binaryoptiontoolsv2) не знайдено у поточному Python-оточенні.\n"
+    f"Поточний Python: {sys.executable}\n"
     "Спробуйте одну з команд:\n"
     "1) py -m pip install binaryoptionstoolsv2\n"
-    "2) py -m pip install git+https://github.com/<repo>/binaryoptionstoolsv2.git\n"
+    "2) py -m pip install binaryoptiontoolsv2\n"
+    "3) py -m pip install git+https://github.com/<repo>/binaryoptionstoolsv2.git\n"
     "Перевірка імпорту: py -c \"import binaryoptionstoolsv2; print('ok')\"\n"
+    "Альтернатива: py -c \"import binaryoptiontoolsv2; print('ok')\"\n"
     "Після встановлення перезапустіть програму."
 )
 
@@ -221,6 +246,10 @@ def launch_google_auth_and_get_ssid(log: Callable[[str], None]) -> str:
 
 
 def create_pocketoption_client(config: BotConfig) -> PocketOptionDataClient:
+    global BinaryOptionsToolsV2Client, BOTSV2_IMPORT_ERROR
+    if BinaryOptionsToolsV2Client is None:
+        BinaryOptionsToolsV2Client, BOTSV2_IMPORT_ERROR = load_binaryoptions_client()
+
     if BinaryOptionsToolsV2Client is None:
         details = f"\nДеталі імпорту: {BOTSV2_IMPORT_ERROR}" if BOTSV2_IMPORT_ERROR else ""
         raise ImportError(BOTSV2_INSTALL_HELP + details)
@@ -536,6 +565,7 @@ if __name__ == "__main__":
 # Інструкція запуску:
 # 1) py -m pip install pandas selenium
 # 2) Встановіть API: py -m pip install binaryoptionstoolsv2
+#    або: py -m pip install binaryoptiontoolsv2
 # 3) Переконайтесь, що встановлено Microsoft Edge і msedgedriver (PATH або EDGE_DRIVER_PATH)
 # 4) Опційно: py -m pip install webdriver-manager
 # 5) python signal_bot_binance.py
