@@ -6,9 +6,9 @@ Signal Bot для Binance (лише аналіз, без відкриття уг
 - ccxt
 - pandas
 
-Бот спочатку оцінює прибутковість списку пар, обирає одну пару
-для моніторингу, рахує EMA(9), EMA(21), RSI(14)
-та виводить сигнали BUY / SELL / NO SIGNAL у консоль.
+Бот бере за основу список активів Pocket Option, мапить їх у символи Binance,
+оцінює прибутковість кандидатів, обирає одну пару для моніторингу,
+рахує EMA(9), EMA(21), RSI(14) та виводить BUY / SELL / NO SIGNAL.
 """
 
 import time
@@ -21,19 +21,27 @@ import pandas as pd
 # =========================
 # Константи налаштування
 # =========================
-TIMEFRAME = "5m"            # Таймфрейм свічок
-OHLCV_LIMIT = 150            # Кількість свічок для аналізу
-CHECK_INTERVAL_SEC = 20      # Пауза між перевірками (секунди)
-API_RETRY_DELAY_SEC = 10     # Пауза після API-помилки (секунди)
+TIMEFRAME = "5m"             # Таймфрейм свічок
+OHLCV_LIMIT = 150             # Кількість свічок для аналізу
+CHECK_INTERVAL_SEC = 20       # Пауза між перевірками (секунди)
+API_RETRY_DELAY_SEC = 10      # Пауза після API-помилки (секунди)
 
-# Список пар для аналізу прибутковості
-CANDIDATE_SYMBOLS = [
-    "BTC/USDT",
-    "ETH/USDT",
-    "BNB/USDT",
-    "SOL/USDT",
-    "XRP/USDT",
+# Список активів Pocket Option (база для вибору пар)
+POCKETOPTION_BASE_ASSETS = [
+    "BTC",
+    "ETH",
+    "BNB",
+    "SOL",
+    "XRP",
+    "DOGE",
+    "ADA",
+    "LTC",
+    "TRX",
+    "DOT",
 ]
+
+# Котирувальна валюта для Binance
+QUOTE_ASSET = "USDT"
 
 # Якщо True — автоматично беремо найприбутковішу пару.
 # Якщо False — користувач обирає пару з рейтингу вручну.
@@ -42,20 +50,6 @@ AUTO_SELECT_BEST_PAIR = True
 EMA_FAST_PERIOD = 9
 EMA_SLOW_PERIOD = 21
 RSI_PERIOD = 14
-
-
-def calculate_profitability_percent(df: pd.DataFrame) -> float:
-    """Рахує прибутковість у % за доступну історію (від першого close до останнього)."""
-    if df.empty:
-        return float("-inf")
-
-    first_close = float(df.iloc[0]["close"])
-    last_close = float(df.iloc[-1]["close"])
-
-    if first_close == 0:
-        return float("-inf")
-
-    return ((last_close - first_close) / first_close) * 100
 
 
 def create_exchange() -> ccxt.binance:
@@ -68,6 +62,31 @@ def create_exchange() -> ccxt.binance:
     })
 
 
+def build_symbol_from_base(base_asset: str, quote_asset: str) -> str:
+    """Формує символ Binance, напр. BTC + USDT -> BTC/USDT."""
+    return f"{base_asset.upper()}/{quote_asset.upper()}"
+
+
+def resolve_pocketoption_symbols(exchange: ccxt.binance) -> list[str]:
+    """
+    Формує список Binance-пар на основі активів Pocket Option
+    і залишає лише ті, що реально доступні на Binance Spot.
+    """
+    markets = exchange.load_markets()
+    candidates = [build_symbol_from_base(base, QUOTE_ASSET) for base in POCKETOPTION_BASE_ASSETS]
+
+    available_symbols = []
+    for symbol in candidates:
+        market = markets.get(symbol)
+        if market and market.get("spot"):
+            available_symbols.append(symbol)
+
+    if not available_symbols:
+        raise RuntimeError("Не знайдено доступних Binance Spot пар зі списку Pocket Option.")
+
+    return available_symbols
+
+
 def fetch_ohlcv_dataframe(
     exchange: ccxt.binance,
     symbol: str,
@@ -76,13 +95,23 @@ def fetch_ohlcv_dataframe(
 ) -> pd.DataFrame:
     """Отримує OHLCV з Binance і повертає DataFrame з базовими колонками."""
     raw_ohlcv = exchange.fetch_ohlcv(symbol=symbol, timeframe=timeframe, limit=limit)
-
-    df = pd.DataFrame(
-        raw_ohlcv,
-        columns=["timestamp", "open", "high", "low", "close", "volume"],
-    )
+    df = pd.DataFrame(raw_ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
     return df
+
+
+def calculate_profitability_percent(df: pd.DataFrame) -> float:
+    """Рахує прибутковість у %: (останній close - перший close) / перший close."""
+    if df.empty:
+        return float("-inf")
+
+    first_close = float(df.iloc[0]["close"])
+    last_close = float(df.iloc[-1]["close"])
+
+    if first_close == 0:
+        return float("-inf")
+
+    return ((last_close - first_close) / first_close) * 100
 
 
 def analyze_symbols_profitability(
@@ -91,10 +120,9 @@ def analyze_symbols_profitability(
     timeframe: str,
     limit: int,
 ) -> list[dict]:
-    """Аналізує прибутковість пар і повертає відсортований рейтинг."""
+    """Аналізує прибутковість кожної пари та повертає відсортований рейтинг."""
     report = []
-
-    print("\nАналіз прибутковості кандидатів...", flush=True)
+    print("\nАналіз прибутковості пар (Pocket Option -> Binance):", flush=True)
 
     for symbol in symbols:
         try:
@@ -112,16 +140,16 @@ def analyze_symbols_profitability(
 def choose_symbol_from_profitability(report: list[dict]) -> str:
     """Обирає пару: автоматично найкращу або вручну з рейтингу."""
     if not report:
-        raise RuntimeError("Немає доступних пар для аналізу.")
+        raise RuntimeError("Немає доступних пар для аналізу прибутковості.")
 
     print("\nРейтинг пар за прибутковістю:", flush=True)
     for index, item in enumerate(report, start=1):
         print(f"{index}. {item['symbol']} ({item['profit_pct']:+.2f}%)", flush=True)
 
     if AUTO_SELECT_BEST_PAIR:
-        best_symbol = report[0]["symbol"]
-        print(f"\nАвтовибір: {best_symbol}", flush=True)
-        return best_symbol
+        selected = report[0]["symbol"]
+        print(f"\nАвтовибір найприбутковішої пари: {selected}", flush=True)
+        return selected
 
     while True:
         user_input = input("\nВведіть номер пари для моніторингу: ").strip()
@@ -131,9 +159,9 @@ def choose_symbol_from_profitability(report: list[dict]) -> str:
 
         choice = int(user_input)
         if 1 <= choice <= len(report):
-            chosen_symbol = report[choice - 1]["symbol"]
-            print(f"Обрано: {chosen_symbol}", flush=True)
-            return chosen_symbol
+            selected = report[choice - 1]["symbol"]
+            print(f"Обрано: {selected}", flush=True)
+            return selected
 
         print("Номер поза межами списку.", flush=True)
 
@@ -141,12 +169,9 @@ def choose_symbol_from_profitability(report: list[dict]) -> str:
 def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """Додає в DataFrame індикатори EMA(9), EMA(21), RSI(14)."""
     result = df.copy()
-
-    # EMA (експоненціальна ковзна середня)
     result["ema9"] = result["close"].ewm(span=EMA_FAST_PERIOD, adjust=False).mean()
     result["ema21"] = result["close"].ewm(span=EMA_SLOW_PERIOD, adjust=False).mean()
 
-    # RSI (Relative Strength Index) за класичною формулою через rolling mean
     delta = result["close"].diff()
     gains = delta.clip(lower=0)
     losses = -delta.clip(upper=0)
@@ -156,33 +181,17 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     rs = avg_gain / avg_loss
     result["rsi"] = 100 - (100 / (1 + rs))
-
     return result
 
 
 def detect_signal(df: pd.DataFrame) -> str:
-    """
-    Визначає сигнал на основі двох останніх свічок.
-
-    BUY:
-    - на попередній свічці EMA9 <= EMA21
-    - на поточній свічці EMA9 > EMA21
-    - RSI від 45 до 70
-    - close > EMA21
-
-    SELL:
-    - на попередній свічці EMA9 >= EMA21
-    - на поточній свічці EMA9 < EMA21
-    - RSI від 30 до 55
-    - close < EMA21
-    """
+    """Визначає BUY / SELL / NO SIGNAL на основі двох останніх свічок."""
     if len(df) < RSI_PERIOD + 2:
         return "NO SIGNAL"
 
     previous_candle = df.iloc[-2]
     current_candle = df.iloc[-1]
 
-    # Якщо RSI ще не розрахований через нестачу історії
     if pd.isna(current_candle["rsi"]):
         return "NO SIGNAL"
 
@@ -221,13 +230,12 @@ def print_status(
     """Акуратно друкує статус у консоль."""
     now_local = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     candle_str = candle_time.strftime("%Y-%m-%d %H:%M:%S UTC")
-
     duplicate_label = " (дублікат пропущено)" if duplicate else ""
 
     print(
         f"[{now_local}] {symbol} {timeframe} | "
         f"Candle: {candle_str} | "
-        f"Close: {close_price:.2f} | EMA9: {ema9:.2f} | EMA21: {ema21:.2f} | RSI: {rsi:.2f} | "
+        f"Close: {close_price:.6f} | EMA9: {ema9:.6f} | EMA21: {ema21:.6f} | RSI: {rsi:.2f} | "
         f"Signal: {signal}{duplicate_label}",
         flush=True,
     )
@@ -237,20 +245,19 @@ def run_signal_bot() -> None:
     """Основний цикл роботи signal bot."""
     exchange = create_exchange()
 
+    candidate_symbols = resolve_pocketoption_symbols(exchange)
     profitability_report = analyze_symbols_profitability(
         exchange=exchange,
-        symbols=CANDIDATE_SYMBOLS,
+        symbols=candidate_symbols,
         timeframe=TIMEFRAME,
         limit=OHLCV_LIMIT,
     )
     selected_symbol = choose_symbol_from_profitability(profitability_report)
 
-    # Зберігаємо останню свічку, на якій уже був надрукований BUY/SELL,
-    # щоб уникати дублювання сигналу в межах тієї самої свічки.
     last_signal_candle_timestamp = None
     last_signal_type = None
 
-    print("Запуск Binance Signal Bot (без відкриття угод)...", flush=True)
+    print("\nЗапуск Binance Signal Bot (без відкриття угод)...", flush=True)
     print(
         f"Пара: {selected_symbol} | Таймфрейм: {TIMEFRAME} | Інтервал перевірки: {CHECK_INTERVAL_SEC}с",
         flush=True,
@@ -258,12 +265,7 @@ def run_signal_bot() -> None:
 
     while True:
         try:
-            market_df = fetch_ohlcv_dataframe(
-                exchange=exchange,
-                symbol=selected_symbol,
-                timeframe=TIMEFRAME,
-                limit=OHLCV_LIMIT,
-            )
+            market_df = fetch_ohlcv_dataframe(exchange, selected_symbol, TIMEFRAME, OHLCV_LIMIT)
             market_df = calculate_indicators(market_df)
 
             signal = detect_signal(market_df)
@@ -312,6 +314,7 @@ if __name__ == "__main__":
 # Інструкція запуску:
 # 1) Встановіть залежності:
 #    pip install ccxt pandas
-# 2) Запустіть бота:
+# 2) За потреби змініть POCKETOPTION_BASE_ASSETS / QUOTE_ASSET / TIMEFRAME.
+# 3) Запустіть бота:
 #    python signal_bot_binance.py
 # =========================
