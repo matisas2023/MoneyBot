@@ -26,6 +26,26 @@ if not hasattr(logging.Logger, "warn"):
     logging.Logger.warn = logging.Logger.warning  # type: ignore[attr-defined]
 
 
+def patch_logger_warn_compat(target: Any) -> None:
+    """Додає alias warn->warning для об'єктів logger у сторонніх бібліотеках."""
+    if target is None:
+        return
+
+    # Якщо передали сам logger-об'єкт
+    if hasattr(target, "warning") and not hasattr(target, "warn"):
+        try:
+            setattr(target, "warn", target.warning)
+        except Exception:
+            pass
+
+    # Якщо target має поле logger
+    logger_obj = getattr(target, "logger", None)
+    if logger_obj is not None and hasattr(logger_obj, "warning") and not hasattr(logger_obj, "warn"):
+        try:
+            setattr(logger_obj, "warn", logger_obj.warning)
+        except Exception:
+            pass
+
 # =========================
 # API import: BinaryOptionsToolsV2
 # =========================
@@ -242,8 +262,13 @@ def create_pocketoption_client(config: BotConfig) -> PocketOptionDataClient:
             raw_client = PocketOption(config.email, config.password)
 
     print("PocketOption client initialized")
+    patch_logger_warn_compat(raw_client)
     client = PocketOptionDataClient(raw_client)
-    if not client.connect():
+    patch_logger_warn_compat(client)
+    connected = client.connect()
+    patch_logger_warn_compat(raw_client)
+    patch_logger_warn_compat(client)
+    if not connected:
         raise ConnectionError("Не вдалося підключитися до Pocket Option через BinaryOptionsToolsV2.")
     return client
 
