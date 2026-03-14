@@ -62,7 +62,6 @@ def patch_third_party_warn_compat() -> None:
 
 patch_loaded_logger_classes_warn_alias()
 patch_third_party_warn_compat()
-patch_binaryoptionstoolsv2_warn_alias()
 
 
 def patch_logger_warn_compat(target: Any) -> None:
@@ -139,6 +138,9 @@ def patch_binaryoptionstoolsv2_warn_alias() -> None:
             setattr(module_logger, "warn", module_logger.warning)
     except Exception:
         pass
+
+
+patch_binaryoptionstoolsv2_warn_alias()
 
 
 # Мінімальний приклад підключення:
