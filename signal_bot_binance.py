@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
@@ -169,6 +170,41 @@ EMA_SLOW_PERIOD = 21
 RSI_PERIOD = 14
 
 
+DETAILED_LOGGING = True
+
+
+def build_warn_diagnostics(target: Any) -> str:
+    """Формує діагностику для помилки logger.warn у сторонніх об'єктах."""
+    lines = []
+    try:
+        lines.append(f"target_type={type(target)}")
+        cls = target.__class__
+        lines.append(f"target_class={cls.__module__}.{cls.__name__}")
+        lines.append(f"target_has_warning={hasattr(target, 'warning')}")
+        lines.append(f"target_has_warn={hasattr(target, 'warn')}")
+    except Exception as diag_error:
+        lines.append(f"target_diag_error={diag_error}")
+
+    try:
+        logger_obj = getattr(target, 'logger', None)
+        if logger_obj is not None:
+            lcls = logger_obj.__class__
+            lines.append(f"logger_class={lcls.__module__}.{lcls.__name__}")
+            lines.append(f"logger_has_warning={hasattr(logger_obj, 'warning')}")
+            lines.append(f"logger_has_warn={hasattr(logger_obj, 'warn')}")
+    except Exception as diag_error:
+        lines.append(f"logger_diag_error={diag_error}")
+
+    return ' | '.join(lines)
+
+
+def log_exception_with_trace(log: Callable[[str], None], prefix: str, error: Exception) -> None:
+    log(f"{prefix} {error}")
+    if DETAILED_LOGGING:
+        tb = traceback.format_exc()
+        for line in tb.rstrip().splitlines():
+            log(f"[TRACE] {line}")
+
 
 @dataclass
 class BotConfig:
@@ -200,7 +236,11 @@ class PocketOptionDataClient:
                     if "warn" in str(error).lower():
                         patch_logger_warn_compat(self.raw_client)
                         patch_loaded_logger_classes_warn_alias()
-                        result = fn()
+                        try:
+                            result = fn()
+                        except Exception as retry_error:
+                            diag = build_warn_diagnostics(self.raw_client)
+                            raise RuntimeError(f"warn_retry_connect_failed: {retry_error} | {diag}") from retry_error
                     else:
                         raise
                 return True if result is None else bool(result)
@@ -220,7 +260,11 @@ class PocketOptionDataClient:
                 if "warn" in str(error).lower():
                     patch_logger_warn_compat(self.raw_client)
                     patch_loaded_logger_classes_warn_alias()
-                    return fn(symbol, timeframe_sec, start_time, end_time)
+                    try:
+                        return fn(symbol, timeframe_sec, start_time, end_time)
+                    except Exception as retry_error:
+                        diag = build_warn_diagnostics(self.raw_client)
+                        raise RuntimeError(f"warn_retry_candles_positional_failed: {retry_error} | {diag}") from retry_error
                 raise
             except TypeError:
                 try:
@@ -230,7 +274,11 @@ class PocketOptionDataClient:
                     if "warn" in str(error).lower():
                         patch_logger_warn_compat(self.raw_client)
                         patch_loaded_logger_classes_warn_alias()
-                        return fn(symbol=symbol, timeframe=timeframe_sec, start=start_time, end=end_time)
+                        try:
+                            return fn(symbol=symbol, timeframe=timeframe_sec, start=start_time, end=end_time)
+                        except Exception as retry_error:
+                            diag = build_warn_diagnostics(self.raw_client)
+                            raise RuntimeError(f"warn_retry_candles_kwargs_failed: {retry_error} | {diag}") from retry_error
                     raise
                 except TypeError:
                     continue
@@ -499,7 +547,7 @@ def run_signal_bot(config: BotConfig, stop_event: threading.Event, log: Callable
             )
             stop_event.wait(config.check_interval_sec)
         except Exception as error:
-            log(f"[ПОМИЛКА API] {error}")
+            log_exception_with_trace(log, "[ПОМИЛКА API]", error)
             stop_event.wait(config.api_retry_delay_sec)
 
 
@@ -646,8 +694,8 @@ class SignalBotGUI:
                         run_signal_bot(config, self.stop_event, self.log)
                         return
                     except Exception as retry_error:
-                        self.log(f"[КРИТИЧНА ПОМИЛКА ПІСЛЯ RETRY] {retry_error}")
-                self.log(f"[КРИТИЧНА ПОМИЛКА] {error}")
+                        log_exception_with_trace(self.log, "[КРИТИЧНА ПОМИЛКА ПІСЛЯ RETRY]", retry_error)
+                log_exception_with_trace(self.log, "[КРИТИЧНА ПОМИЛКА]", error)
 
         self.bot_thread = threading.Thread(target=runner, daemon=True)
         self.bot_thread.start()
