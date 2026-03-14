@@ -1,6 +1,6 @@
 import threading
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox, ttk, TclError
 
 from .auth import launch_google_auth_and_get_ssid
 from .config import (
@@ -61,6 +61,11 @@ class SignalBotGUI:
 
         self.log_text = tk.Text(frm, height=18, wrap="word")
         self.log_text.grid(row=10, column=0, columnspan=2, sticky="nsew")
+        self.log_menu = tk.Menu(self.root, tearoff=0)
+        self.log_menu.add_command(label="Копіювати", command=self.copy_selected_log)
+        self.log_menu.add_command(label="Копіювати все", command=self.copy_all_logs)
+        self.log_text.bind("<Control-c>", self.copy_selected_log)
+        self.log_text.bind("<Button-3>", self.show_log_context_menu)
         frm.rowconfigure(10, weight=1)
 
     def log(self, message: str) -> None:
@@ -103,6 +108,27 @@ class SignalBotGUI:
 
         self.worker = threading.Thread(target=runner, daemon=True)
         self.worker.start()
+
+    def show_log_context_menu(self, event) -> str:
+        self.log_text.focus_set()
+        self.log_menu.tk_popup(event.x_root, event.y_root)
+        return "break"
+
+    def copy_selected_log(self, event=None) -> str:
+        try:
+            selected = self.log_text.selection_get()
+        except TclError:
+            return "break"
+        self.root.clipboard_clear()
+        self.root.clipboard_append(selected)
+        return "break"
+
+    def copy_all_logs(self) -> None:
+        content = self.log_text.get("1.0", "end-1c")
+        if not content:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(content)
 
     def stop_bot(self) -> None:
         self.stop_event.set()
