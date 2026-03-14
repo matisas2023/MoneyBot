@@ -132,10 +132,43 @@ except ImportError:
 def patch_binaryoptionstoolsv2_warn_alias() -> None:
     """Патчить logger.warn для внутрішніх об'єктів BinaryOptionsToolsV2."""
     try:
-        # Часто logger зберігається як module-level об'єкт
+        # 1) module-level logger у asynchronous.py
         module_logger = getattr(po_async, "logger", None)
         if module_logger is not None and hasattr(module_logger, "warning") and not hasattr(module_logger, "warn"):
             setattr(module_logger, "warn", module_logger.warning)
+    except Exception:
+        pass
+
+    try:
+        # 2) класи Logger всередині модуля BinaryOptionsToolsV2.pocketoption.asynchronous
+        for value in vars(po_async).values():
+            if isinstance(value, type) and "Logger" in value.__name__:
+                if hasattr(value, "warning") and not hasattr(value, "warn"):
+                    setattr(value, "warn", value.warning)
+    except Exception:
+        pass
+
+    try:
+        # 3) loguru class-level patch (частий кейс)
+        import loguru._logger as loguru_logger_module  # type: ignore
+        loguru_cls = getattr(loguru_logger_module, "Logger", None)
+        if isinstance(loguru_cls, type) and hasattr(loguru_cls, "warning") and not hasattr(loguru_cls, "warn"):
+            setattr(loguru_cls, "warn", loguru_cls.warning)
+    except Exception:
+        pass
+
+    try:
+        # 4) додатково патчимо __init__ PocketOptionAsync, щоб гарантовано застосувати alias перед warn-викликом
+        async_cls = getattr(po_async, "PocketOptionAsync", None)
+        original_init = getattr(async_cls, "__init__", None) if async_cls is not None else None
+        if async_cls is not None and callable(original_init) and not getattr(async_cls, "_warn_patch_wrapped", False):
+            def _wrapped_init(self, *args, **kwargs):
+                patch_loaded_logger_classes_warn_alias()
+                patch_third_party_warn_compat()
+                return original_init(self, *args, **kwargs)
+
+            setattr(async_cls, "__init__", _wrapped_init)
+            setattr(async_cls, "_warn_patch_wrapped", True)
     except Exception:
         pass
 
