@@ -35,20 +35,30 @@ def patch_logger_warn_compat(target: Any) -> None:
     if target is None:
         return
 
-    # Якщо передали сам logger-об'єкт
-    if hasattr(target, "warning") and not hasattr(target, "warn"):
-        try:
-            setattr(target, "warn", target.warning)
-        except Exception:
-            pass
+    def _patch_obj(obj: Any) -> None:
+        if obj is None:
+            return
+        if hasattr(obj, "warning") and not hasattr(obj, "warn"):
+            # 1) пробуємо патчити екземпляр
+            try:
+                setattr(obj, "warn", obj.warning)
+                return
+            except Exception:
+                pass
+
+            # 2) fallback: патчимо клас логера
+            try:
+                cls = obj.__class__
+                if not hasattr(cls, "warn") and hasattr(cls, "warning"):
+                    setattr(cls, "warn", cls.warning)
+            except Exception:
+                pass
+
+    _patch_obj(target)
 
     # Якщо target має поле logger
     logger_obj = getattr(target, "logger", None)
-    if logger_obj is not None and hasattr(logger_obj, "warning") and not hasattr(logger_obj, "warn"):
-        try:
-            setattr(logger_obj, "warn", logger_obj.warning)
-        except Exception:
-            pass
+    _patch_obj(logger_obj)
 
 # =========================
 # API import: BinaryOptionsToolsV2
@@ -127,7 +137,14 @@ class PocketOptionDataClient:
         for name in ("connect", "login", "start"):
             fn = getattr(self.raw_client, name, None)
             if callable(fn):
-                result = fn()
+                try:
+                    result = fn()
+                except AttributeError as error:
+                    if "warn" in str(error).lower():
+                        patch_logger_warn_compat(self.raw_client)
+                        result = fn()
+                    else:
+                        raise
                 return True if result is None else bool(result)
         return True
 
@@ -140,9 +157,19 @@ class PocketOptionDataClient:
                 continue
             try:
                 return fn(symbol, timeframe_sec, start_time, end_time)
+            except AttributeError as error:
+                if "warn" in str(error).lower():
+                    patch_logger_warn_compat(self.raw_client)
+                    return fn(symbol, timeframe_sec, start_time, end_time)
+                raise
             except TypeError:
                 try:
                     return fn(symbol=symbol, timeframe=timeframe_sec, start=start_time, end=end_time)
+                except AttributeError as error:
+                    if "warn" in str(error).lower():
+                        patch_logger_warn_compat(self.raw_client)
+                        return fn(symbol=symbol, timeframe=timeframe_sec, start=start_time, end=end_time)
+                    raise
                 except TypeError:
                     continue
         raise AttributeError("У client не знайдено сумісний метод отримання свічок.")
