@@ -30,6 +30,20 @@ logger = logging.getLogger(__name__)
 logging.Logger.warn = logging.Logger.warning  # type: ignore[attr-defined]
 
 
+def patch_third_party_warn_compat() -> None:
+    """Патчить найпоширеніші сторонні логери, де може бути відсутній warn()."""
+    # loguru logger
+    try:
+        from loguru import logger as loguru_logger  # type: ignore
+        if hasattr(loguru_logger, "warning") and not hasattr(loguru_logger, "warn"):
+            setattr(loguru_logger, "warn", loguru_logger.warning)
+    except Exception:
+        pass
+
+
+patch_third_party_warn_compat()
+
+
 def patch_logger_warn_compat(target: Any) -> None:
     """Додає alias warn->warning для об'єктів logger у сторонніх бібліотеках."""
     if target is None:
@@ -270,6 +284,18 @@ def launch_google_auth_and_get_ssid(log: Callable[[str], None]) -> str:
             pass
 
 
+
+def construct_pocketoption_with_warn_retry(*args, **kwargs):
+    """Створює PocketOption з повторною спробою після патчу warn-сумісності."""
+    try:
+        return PocketOption(*args, **kwargs)
+    except AttributeError as error:
+        if "warn" in str(error).lower():
+            patch_third_party_warn_compat()
+            return PocketOption(*args, **kwargs)
+        raise
+
+
 def create_pocketoption_client(config: BotConfig) -> PocketOptionDataClient:
 
     method = config.auth_method.lower().strip()
@@ -278,19 +304,19 @@ def create_pocketoption_client(config: BotConfig) -> PocketOptionDataClient:
             raise ValueError("Спочатку виконайте Google-авторизацію (отримайте SSID).")
         # можливі сигнатури різних збірок
         try:
-            raw_client = PocketOption(ssid=config.google_ssid)
+            raw_client = construct_pocketoption_with_warn_retry(ssid=config.google_ssid)
         except TypeError:
             try:
-                raw_client = PocketOption(config.google_ssid)
+                raw_client = construct_pocketoption_with_warn_retry(config.google_ssid)
             except TypeError:
-                raw_client = PocketOption("", "", config.google_ssid)
+                raw_client = construct_pocketoption_with_warn_retry("", "", config.google_ssid)
     else:
         if not config.email or not config.password:
             raise ValueError("Для password-режиму потрібні email та password.")
         try:
-            raw_client = PocketOption(email=config.email, password=config.password)
+            raw_client = construct_pocketoption_with_warn_retry(email=config.email, password=config.password)
         except TypeError:
-            raw_client = PocketOption(config.email, config.password)
+            raw_client = construct_pocketoption_with_warn_retry(config.email, config.password)
 
     print("PocketOption client initialized")
     patch_logger_warn_compat(raw_client)
@@ -565,6 +591,14 @@ class SignalBotGUI:
                 err_text = str(error)
                 self.root.after(0, lambda e=err_text: messagebox.showerror("Відсутня залежність", e))
             except Exception as error:
+                if "warn" in str(error).lower() and "logger" in str(error).lower():
+                    self.log("Виявлено несумісний logger.warn, застосовую сумісність і повторюю запуск...")
+                    patch_third_party_warn_compat()
+                    try:
+                        run_signal_bot(config, self.stop_event, self.log)
+                        return
+                    except Exception as retry_error:
+                        self.log(f"[КРИТИЧНА ПОМИЛКА ПІСЛЯ RETRY] {retry_error}")
                 self.log(f"[КРИТИЧНА ПОМИЛКА] {error}")
 
         self.bot_thread = threading.Thread(target=runner, daemon=True)
