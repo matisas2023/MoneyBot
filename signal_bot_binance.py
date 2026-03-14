@@ -62,6 +62,7 @@ def patch_third_party_warn_compat() -> None:
 
 patch_loaded_logger_classes_warn_alias()
 patch_third_party_warn_compat()
+patch_binaryoptionstoolsv2_warn_alias()
 
 
 def patch_logger_warn_compat(target: Any) -> None:
@@ -122,10 +123,23 @@ def patch_logger_warn_compat(target: Any) -> None:
 # =========================
 try:
     from BinaryOptionsToolsV2.pocketoption import PocketOption
+    from BinaryOptionsToolsV2.pocketoption import asynchronous as po_async  # type: ignore
 except ImportError:
     print("Library BinaryOptionsToolsV2 not installed")
     print("Run: pip install binaryoptionstoolsv2")
     raise SystemExit()
+
+
+def patch_binaryoptionstoolsv2_warn_alias() -> None:
+    """Патчить logger.warn для внутрішніх об'єктів BinaryOptionsToolsV2."""
+    try:
+        # Часто logger зберігається як module-level об'єкт
+        module_logger = getattr(po_async, "logger", None)
+        if module_logger is not None and hasattr(module_logger, "warning") and not hasattr(module_logger, "warn"):
+            setattr(module_logger, "warn", module_logger.warning)
+    except Exception:
+        pass
+
 
 # Мінімальний приклад підключення:
 # client = PocketOption(ssid="YOUR_SESSION_ID")
@@ -383,11 +397,13 @@ def launch_google_auth_and_get_ssid(log: Callable[[str], None]) -> str:
 
 def construct_pocketoption_with_warn_retry(*args, **kwargs):
     """Створює PocketOption з повторною спробою після патчу warn-сумісності."""
+    patch_binaryoptionstoolsv2_warn_alias()
     try:
         return PocketOption(*args, **kwargs)
     except AttributeError as error:
         if "warn" in str(error).lower():
             patch_third_party_warn_compat()
+            patch_binaryoptionstoolsv2_warn_alias()
             return PocketOption(*args, **kwargs)
         raise
 
@@ -407,12 +423,10 @@ def create_pocketoption_client(config: BotConfig) -> PocketOptionDataClient:
             except TypeError:
                 raw_client = construct_pocketoption_with_warn_retry("", "", config.google_ssid)
     else:
-        if not config.email or not config.password:
-            raise ValueError("Для password-режиму потрібні email та password.")
-        try:
-            raw_client = construct_pocketoption_with_warn_retry(email=config.email, password=config.password)
-        except TypeError:
-            raw_client = construct_pocketoption_with_warn_retry(config.email, config.password)
+        raise ValueError(
+            "Для BinaryOptionsToolsV2 у цій збірці підтримується авторизація через SSID. "
+            "Оберіть режим 'google' і отримайте SSID кнопкою авторизації."
+        )
 
     print("PocketOption client initialized")
     patch_logger_warn_compat(raw_client)
