@@ -136,6 +136,18 @@ def patch_binaryoptionstoolsv2_warn_alias() -> None:
         module_logger = getattr(po_async, "logger", None)
         if module_logger is not None and hasattr(module_logger, "warning") and not hasattr(module_logger, "warn"):
             setattr(module_logger, "warn", module_logger.warning)
+
+        # 1.1) патч класу логера, який повертає logging.getLogger()
+        async_logging = getattr(po_async, "logging", None)
+        if async_logging is not None:
+            logger_cls = getattr(async_logging, "Logger", None)
+            if isinstance(logger_cls, type) and hasattr(logger_cls, "warning") and not hasattr(logger_cls, "warn"):
+                setattr(logger_cls, "warn", logger_cls.warning)
+            get_logger_class = getattr(async_logging, "getLoggerClass", None)
+            if callable(get_logger_class):
+                runtime_cls = get_logger_class()
+                if hasattr(runtime_cls, "warning") and not hasattr(runtime_cls, "warn"):
+                    setattr(runtime_cls, "warn", runtime_cls.warning)
     except Exception:
         pass
 
@@ -245,6 +257,19 @@ def build_warn_diagnostics(target: Any) -> str:
         lines.append(f"logger_diag_error={diag_error}")
 
     return ' | '.join(lines)
+
+
+def debug_warn_logger_state(logger_obj: Any, log: Optional[Callable[[str], None]] = None) -> None:
+    """Debug: друкує тип logger та наявність warn/warning."""
+    msg = (
+        f"[WARN-DEBUG] logger_type={type(logger_obj)} "
+        f"has_warn={hasattr(logger_obj, 'warn')} "
+        f"has_warning={hasattr(logger_obj, 'warning')}"
+    )
+    if callable(log):
+        log(msg)
+    else:
+        print(msg)
 
 
 def log_exception_with_trace(log: Callable[[str], None], prefix: str, error: Exception) -> None:
@@ -433,12 +458,14 @@ def launch_google_auth_and_get_ssid(log: Callable[[str], None]) -> str:
 def construct_pocketoption_with_warn_retry(*args, **kwargs):
     """Створює PocketOption з повторною спробою після патчу warn-сумісності."""
     patch_binaryoptionstoolsv2_warn_alias()
+    debug_warn_logger_state(getattr(po_async, "logger", None))
     try:
         return PocketOption(*args, **kwargs)
     except AttributeError as error:
         if "warn" in str(error).lower():
             patch_third_party_warn_compat()
             patch_binaryoptionstoolsv2_warn_alias()
+            debug_warn_logger_state(getattr(po_async, "logger", None))
             return PocketOption(*args, **kwargs)
         raise
 
