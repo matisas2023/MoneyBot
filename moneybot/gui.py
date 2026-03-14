@@ -64,8 +64,8 @@ class SignalBotGUI:
         frm.rowconfigure(10, weight=1)
 
     def log(self, message: str) -> None:
-        self.log_text.insert("end", message + "\n")
-        self.log_text.see("end")
+        print(message, flush=True)
+        self.root.after(0, lambda m=message: (self.log_text.insert("end", m + "\n"), self.log_text.see("end")))
 
     def build_config(self) -> BotConfig:
         pairs = [x.strip().upper() for x in self.pairs_var.get().split(",") if x.strip()]
