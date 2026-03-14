@@ -1,6 +1,6 @@
 import threading
 import tkinter as tk
-from tkinter import messagebox, ttk, TclError
+from tkinter import messagebox, ttk
 
 from .auth import launch_google_auth_and_get_ssid
 from .config import (
@@ -58,6 +58,7 @@ class SignalBotGUI:
         ttk.Button(btns, text="Google Auth", command=self.google_auth).pack(side="left", padx=4)
         ttk.Button(btns, text="Start", command=self.start_bot).pack(side="left", padx=4)
         ttk.Button(btns, text="Stop", command=self.stop_bot).pack(side="left", padx=4)
+        ttk.Button(btns, text="Копіювати лог", command=self.copy_all_logs).pack(side="left", padx=4)
 
         self.log_text = tk.Text(frm, height=18, wrap="word")
         self.log_text.grid(row=10, column=0, columnspan=2, sticky="nsew")
@@ -115,10 +116,14 @@ class SignalBotGUI:
         return "break"
 
     def copy_selected_log(self, event=None) -> str:
-        try:
-            selected = self.log_text.selection_get()
-        except TclError:
+        if self.log_text.tag_ranges("sel"):
+            selected = self.log_text.get("sel.first", "sel.last")
+        else:
+            selected = self.log_text.get("1.0", "end-1c")
+
+        if not selected:
             return "break"
+
         self.root.clipboard_clear()
         self.root.clipboard_append(selected)
         return "break"
