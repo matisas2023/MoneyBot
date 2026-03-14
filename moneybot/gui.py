@@ -62,11 +62,20 @@ class SignalBotGUI:
 
         self.log_text = tk.Text(frm, height=18, wrap="word")
         self.log_text.grid(row=10, column=0, columnspan=2, sticky="nsew")
+
+        copy_btns = ttk.Frame(frm)
+        copy_btns.grid(row=11, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ttk.Button(copy_btns, text="Копіювати виділене", command=self.copy_selected_log).pack(side="left", padx=(0, 4))
+        ttk.Button(copy_btns, text="Копіювати все", command=self.copy_all_logs).pack(side="left")
+
         self.log_menu = tk.Menu(self.root, tearoff=0)
-        self.log_menu.add_command(label="Копіювати", command=self.copy_selected_log)
+        self.log_menu.add_command(label="Копіювати виділене", command=self.copy_selected_log)
         self.log_menu.add_command(label="Копіювати все", command=self.copy_all_logs)
         self.log_text.bind("<Control-c>", self.copy_selected_log)
+        self.log_text.bind("<Control-C>", self.copy_selected_log)
+        self.log_text.bind("<Control-Insert>", self.copy_selected_log)
         self.log_text.bind("<Button-3>", self.show_log_context_menu)
+        self.log_text.bind("<Button-2>", self.show_log_context_menu)
         frm.rowconfigure(10, weight=1)
 
     def log(self, message: str) -> None:
@@ -128,12 +137,13 @@ class SignalBotGUI:
         self.root.clipboard_append(selected)
         return "break"
 
-    def copy_all_logs(self) -> None:
+    def copy_all_logs(self) -> str:
         content = self.log_text.get("1.0", "end-1c")
         if not content:
-            return
+            return "break"
         self.root.clipboard_clear()
         self.root.clipboard_append(content)
+        return "break"
 
     def stop_bot(self) -> None:
         self.stop_event.set()
