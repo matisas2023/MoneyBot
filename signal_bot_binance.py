@@ -31,6 +31,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 logging.Logger.warn = logging.Logger.warning  # type: ignore[attr-defined]
+if hasattr(logging, "LoggerAdapter") and hasattr(logging.LoggerAdapter, "warning") and not hasattr(logging.LoggerAdapter, "warn"):
+    logging.LoggerAdapter.warn = logging.LoggerAdapter.warning  # type: ignore[attr-defined]
 
 
 def patch_loaded_logger_classes_warn_alias() -> None:
@@ -175,34 +177,10 @@ def patch_binaryoptionstoolsv2_warn_alias() -> None:
         original_init = getattr(async_cls, "__init__", None) if async_cls is not None else None
         if async_cls is not None and callable(original_init) and not getattr(async_cls, "_warn_patch_wrapped", False):
             def _wrapped_init(self, *args, **kwargs):
+                # self.logger створюється всередині original_init, тому патчимо класи логерів ДО виклику.
                 patch_loaded_logger_classes_warn_alias()
                 patch_third_party_warn_compat()
-                # Гарантуємо сумісність ДО створення self.logger всередині original_init.
-                async_logging = getattr(po_async, "logging", None)
-                original_get_logger = None
-                if async_logging is not None and hasattr(async_logging, "getLogger"):
-                    original_get_logger = async_logging.getLogger
-
-                    def _patched_get_logger(*g_args, **g_kwargs):
-                        logger_obj = original_get_logger(*g_args, **g_kwargs)
-                        if hasattr(logger_obj, "warning") and not hasattr(logger_obj, "warn"):
-                            setattr(logger_obj, "warn", logger_obj.warning)
-                        return logger_obj
-
-                    async_logging.getLogger = _patched_get_logger
-
-                try:
-                    return original_init(self, *args, **kwargs)
-                except AttributeError as error:
-                    if "warn" in str(error).lower():
-                        print("[DEBUG logger]")
-                        print(f"type = {type(getattr(self, 'logger', None)).__name__}")
-                        print(f"has warn = {hasattr(getattr(self, 'logger', None), 'warn')}")
-                        print(f"has warning = {hasattr(getattr(self, 'logger', None), 'warning')}")
-                    raise
-                finally:
-                    if async_logging is not None and original_get_logger is not None:
-                        async_logging.getLogger = original_get_logger
+                return original_init(self, *args, **kwargs)
 
             setattr(async_cls, "__init__", _wrapped_init)
             setattr(async_cls, "_warn_patch_wrapped", True)
@@ -282,19 +260,6 @@ def build_warn_diagnostics(target: Any) -> str:
         lines.append(f"logger_diag_error={diag_error}")
 
     return ' | '.join(lines)
-
-
-def debug_warn_logger_state(logger_obj: Any, log: Optional[Callable[[str], None]] = None) -> None:
-    """Debug: друкує тип logger та наявність warn/warning."""
-    msg = (
-        f"[WARN-DEBUG] logger_type={type(logger_obj)} "
-        f"has_warn={hasattr(logger_obj, 'warn')} "
-        f"has_warning={hasattr(logger_obj, 'warning')}"
-    )
-    if callable(log):
-        log(msg)
-    else:
-        print(msg)
 
 
 def log_exception_with_trace(log: Callable[[str], None], prefix: str, error: Exception) -> None:
@@ -483,14 +448,12 @@ def launch_google_auth_and_get_ssid(log: Callable[[str], None]) -> str:
 def construct_pocketoption_with_warn_retry(*args, **kwargs):
     """Створює PocketOption з повторною спробою після патчу warn-сумісності."""
     patch_binaryoptionstoolsv2_warn_alias()
-    debug_warn_logger_state(getattr(po_async, "logger", None))
     try:
         return PocketOption(*args, **kwargs)
     except AttributeError as error:
         if "warn" in str(error).lower():
             patch_third_party_warn_compat()
             patch_binaryoptionstoolsv2_warn_alias()
-            debug_warn_logger_state(getattr(po_async, "logger", None))
             return PocketOption(*args, **kwargs)
         raise
 
