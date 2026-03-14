@@ -11,6 +11,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -30,8 +31,22 @@ logger = logging.getLogger(__name__)
 logging.Logger.warn = logging.Logger.warning  # type: ignore[attr-defined]
 
 
+def patch_loaded_logger_classes_warn_alias() -> None:
+    """Патчить warn->warning для всіх класів Logger у вже завантажених модулях."""
+    for module in list(sys.modules.values()):
+        if module is None:
+            continue
+        logger_cls = getattr(module, "Logger", None)
+        if isinstance(logger_cls, type) and hasattr(logger_cls, "warning") and not hasattr(logger_cls, "warn"):
+            try:
+                setattr(logger_cls, "warn", logger_cls.warning)
+            except Exception:
+                pass
+
+
 def patch_third_party_warn_compat() -> None:
     """Патчить найпоширеніші сторонні логери, де може бути відсутній warn()."""
+    patch_loaded_logger_classes_warn_alias()
     # loguru logger
     try:
         from loguru import logger as loguru_logger  # type: ignore
@@ -41,6 +56,7 @@ def patch_third_party_warn_compat() -> None:
         pass
 
 
+patch_loaded_logger_classes_warn_alias()
 patch_third_party_warn_compat()
 
 
@@ -152,10 +168,12 @@ class PocketOptionDataClient:
             fn = getattr(self.raw_client, name, None)
             if callable(fn):
                 try:
+                    patch_loaded_logger_classes_warn_alias()
                     result = fn()
                 except AttributeError as error:
                     if "warn" in str(error).lower():
                         patch_logger_warn_compat(self.raw_client)
+                        patch_loaded_logger_classes_warn_alias()
                         result = fn()
                     else:
                         raise
@@ -170,18 +188,22 @@ class PocketOptionDataClient:
             if not callable(fn):
                 continue
             try:
+                patch_loaded_logger_classes_warn_alias()
                 return fn(symbol, timeframe_sec, start_time, end_time)
             except AttributeError as error:
                 if "warn" in str(error).lower():
                     patch_logger_warn_compat(self.raw_client)
+                    patch_loaded_logger_classes_warn_alias()
                     return fn(symbol, timeframe_sec, start_time, end_time)
                 raise
             except TypeError:
                 try:
+                    patch_loaded_logger_classes_warn_alias()
                     return fn(symbol=symbol, timeframe=timeframe_sec, start=start_time, end=end_time)
                 except AttributeError as error:
                     if "warn" in str(error).lower():
                         patch_logger_warn_compat(self.raw_client)
+                        patch_loaded_logger_classes_warn_alias()
                         return fn(symbol=symbol, timeframe=timeframe_sec, start=start_time, end=end_time)
                     raise
                 except TypeError:
