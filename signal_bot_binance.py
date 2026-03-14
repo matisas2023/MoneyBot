@@ -425,10 +425,25 @@ def create_pocketoption_client(config: BotConfig) -> PocketOptionDataClient:
             except TypeError:
                 raw_client = construct_pocketoption_with_warn_retry("", "", config.google_ssid)
     else:
-        raise ValueError(
-            "Для BinaryOptionsToolsV2 у цій збірці підтримується авторизація через SSID. "
-            "Оберіть режим 'google' і отримайте SSID кнопкою авторизації."
-        )
+        # UX-fallback: якщо SSID уже отримано, використовуємо його навіть коли випадково обрано password
+        if config.google_ssid:
+            logger.warning(
+                "Обрано '%s' режим, але BinaryOptionsToolsV2 очікує SSID. "
+                "Використовую отриманий SSID автоматично.",
+                method,
+            )
+            try:
+                raw_client = construct_pocketoption_with_warn_retry(ssid=config.google_ssid)
+            except TypeError:
+                try:
+                    raw_client = construct_pocketoption_with_warn_retry(config.google_ssid)
+                except TypeError:
+                    raw_client = construct_pocketoption_with_warn_retry("", "", config.google_ssid)
+        else:
+            raise ValueError(
+                "Для BinaryOptionsToolsV2 у цій збірці підтримується авторизація через SSID. "
+                "Оберіть режим 'google' і отримайте SSID кнопкою авторизації."
+            )
 
     print("PocketOption client initialized")
     patch_logger_warn_compat(raw_client)
@@ -657,6 +672,7 @@ class SignalBotGUI:
                 ssid = launch_google_auth_and_get_ssid(self.log)
                 self.google_ssid_value = ssid
                 self.root.after(0, lambda: self.google_status_var.set("отримано ✅"))
+                self.root.after(0, lambda: self.auth_method_var.set("google"))
             except Exception as error:
                 self.log(f"[ПОМИЛКА GOOGLE AUTH] {error}")
                 self.root.after(0, lambda: self.google_status_var.set("помилка ❌"))
