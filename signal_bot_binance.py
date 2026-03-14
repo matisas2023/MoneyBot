@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Optional
@@ -32,16 +33,18 @@ logging.Logger.warn = logging.Logger.warning  # type: ignore[attr-defined]
 
 
 def patch_loaded_logger_classes_warn_alias() -> None:
-    """Патчить warn->warning для всіх класів Logger у вже завантажених модулях."""
+    """Патчить warn->warning для класів logger у вже завантажених модулях."""
     for module in list(sys.modules.values()):
         if module is None:
             continue
-        logger_cls = getattr(module, "Logger", None)
-        if isinstance(logger_cls, type) and hasattr(logger_cls, "warning") and not hasattr(logger_cls, "warn"):
-            try:
-                setattr(logger_cls, "warn", logger_cls.warning)
-            except Exception:
-                pass
+
+        for class_name in ("Logger", "LoggerAdapter"):
+            logger_cls = getattr(module, class_name, None)
+            if isinstance(logger_cls, type) and hasattr(logger_cls, "warning") and not hasattr(logger_cls, "warn"):
+                try:
+                    setattr(logger_cls, "warn", logger_cls.warning)
+                except Exception:
+                    pass
 
 
 def patch_third_party_warn_compat() -> None:
@@ -61,34 +64,57 @@ patch_third_party_warn_compat()
 
 
 def patch_logger_warn_compat(target: Any) -> None:
-    """Додає alias warn->warning для об'єктів logger у сторонніх бібліотеках."""
+    """Додає alias warn->warning для logger-об'єктів, у т.ч. вкладених у сторонніх клієнтах."""
     if target is None:
         return
 
-    def _patch_obj(obj: Any) -> None:
+    visited_ids: set[int] = set()
+    queue = deque([(target, 0)])
+    max_depth = 4
+
+    while queue:
+        obj, depth = queue.popleft()
         if obj is None:
-            return
+            continue
+        obj_id = id(obj)
+        if obj_id in visited_ids:
+            continue
+        visited_ids.add(obj_id)
+
+        # 1) патч екземпляра
         if hasattr(obj, "warning") and not hasattr(obj, "warn"):
-            # 1) пробуємо патчити екземпляр
             try:
                 setattr(obj, "warn", obj.warning)
-                return
             except Exception:
                 pass
 
-            # 2) fallback: патчимо клас логера
-            try:
-                cls = obj.__class__
-                if not hasattr(cls, "warn") and hasattr(cls, "warning"):
+        # 2) патч класу екземпляра
+        try:
+            cls = obj.__class__
+            if hasattr(cls, "warning") and not hasattr(cls, "warn"):
+                try:
                     setattr(cls, "warn", cls.warning)
-            except Exception:
-                pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
-    _patch_obj(target)
+        if depth >= max_depth:
+            continue
 
-    # Якщо target має поле logger
-    logger_obj = getattr(target, "logger", None)
-    _patch_obj(logger_obj)
+        # 3) обхід вкладених атрибутів об'єкта
+        try:
+            attrs = vars(obj)
+        except Exception:
+            attrs = None
+
+        if isinstance(attrs, dict):
+            for value in attrs.values():
+                # не занурюємось у примітиви
+                if isinstance(value, (str, bytes, int, float, bool, type(None))):
+                    continue
+                queue.append((value, depth + 1))
+
 
 # =========================
 # API import: BinaryOptionsToolsV2
