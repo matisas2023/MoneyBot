@@ -177,7 +177,32 @@ def patch_binaryoptionstoolsv2_warn_alias() -> None:
             def _wrapped_init(self, *args, **kwargs):
                 patch_loaded_logger_classes_warn_alias()
                 patch_third_party_warn_compat()
-                return original_init(self, *args, **kwargs)
+                # Гарантуємо сумісність ДО створення self.logger всередині original_init.
+                async_logging = getattr(po_async, "logging", None)
+                original_get_logger = None
+                if async_logging is not None and hasattr(async_logging, "getLogger"):
+                    original_get_logger = async_logging.getLogger
+
+                    def _patched_get_logger(*g_args, **g_kwargs):
+                        logger_obj = original_get_logger(*g_args, **g_kwargs)
+                        if hasattr(logger_obj, "warning") and not hasattr(logger_obj, "warn"):
+                            setattr(logger_obj, "warn", logger_obj.warning)
+                        return logger_obj
+
+                    async_logging.getLogger = _patched_get_logger
+
+                try:
+                    return original_init(self, *args, **kwargs)
+                except AttributeError as error:
+                    if "warn" in str(error).lower():
+                        print("[DEBUG logger]")
+                        print(f"type = {type(getattr(self, 'logger', None)).__name__}")
+                        print(f"has warn = {hasattr(getattr(self, 'logger', None), 'warn')}")
+                        print(f"has warning = {hasattr(getattr(self, 'logger', None), 'warning')}")
+                    raise
+                finally:
+                    if async_logging is not None and original_get_logger is not None:
+                        async_logging.getLogger = original_get_logger
 
             setattr(async_cls, "__init__", _wrapped_init)
             setattr(async_cls, "_warn_patch_wrapped", True)
