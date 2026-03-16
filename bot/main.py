@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import signal
 from types import FrameType
 
 from .config import load_settings
 from .logger import setup_logger
+
+
+def _apply_logger_warn_compat() -> None:
+    if hasattr(logging.Logger, "warning") and not hasattr(logging.Logger, "warn"):
+        logging.Logger.warn = logging.Logger.warning  # type: ignore[attr-defined]
+    if (
+        hasattr(logging, "LoggerAdapter")
+        and hasattr(logging.LoggerAdapter, "warning")
+        and not hasattr(logging.LoggerAdapter, "warn")
+    ):
+        logging.LoggerAdapter.warn = logging.LoggerAdapter.warning  # type: ignore[attr-defined]
 
 
 class _SignalController:
@@ -30,6 +42,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    _apply_logger_warn_compat()
     args = _build_parser().parse_args()
     settings = load_settings(args.config)
     logger = setup_logger(settings.logging.level, settings.logging.file)
