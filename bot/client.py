@@ -37,11 +37,53 @@ def _patch_binaryoptions_warn_source() -> None:
         return
 
     source = source_path.read_text(encoding="utf-8")
-    patched = source.replace("self.logger.warn(", "self.logger.warning(")
-    if patched != source:
-        source_path.write_text(patched, encoding="utf-8")
+    original = source
 
+    helper = """
 
+def _po_log_warn(logger_obj, message):
+    if os.getenv("BOT_DEBUG_BINARYOPTIONS", "0") == "1":
+        logger_cls = logger_obj.__class__
+        print("[DEBUG] logger_type=", type(logger_obj), flush=True)
+        print("[DEBUG] logger_class_module=", logger_cls.__module__, flush=True)
+        print("[DEBUG] logger_class_name=", logger_cls.__name__, flush=True)
+        print("[DEBUG] logger_mro=", logger_cls.__mro__, flush=True)
+        print("[DEBUG] logger_public_methods=", [name for name in dir(logger_obj) if not name.startswith('_')], flush=True)
+        print("[DEBUG] has_warn=", hasattr(logger_obj, "warn"), flush=True)
+        print("[DEBUG] has_warning=", hasattr(logger_obj, "warning"), flush=True)
+        print("[DEBUG] has_info=", hasattr(logger_obj, "info"), flush=True)
+        print("[DEBUG] has_debug=", hasattr(logger_obj, "debug"), flush=True)
+        print("[DEBUG] has_error=", hasattr(logger_obj, "error"), flush=True)
+        print("[DEBUG] has_log=", hasattr(logger_obj, "log"), flush=True)
+
+    for method_name in ("warning", "warn", "info", "debug", "error"):
+        method = getattr(logger_obj, method_name, None)
+        if callable(method):
+            method(message)
+            return
+
+    method = getattr(logger_obj, "log", None)
+    if callable(method):
+        method(message)
+
+"""
+
+    if "def _po_log_warn(logger_obj, message):" not in source:
+        if "import os" not in source:
+            source = "import os\n" + source
+        source = source + helper
+
+    source = source.replace(
+        "self.logger.warn(f\"SSID does not start with '42[': {ssid[:20]}...\")",
+        "_po_log_warn(self.logger, f\"SSID does not start with '42[': {ssid[:20]}...\")",
+    )
+    source = source.replace(
+        "self.logger.warning(f\"SSID does not start with '42[': {ssid[:20]}...\")",
+        "_po_log_warn(self.logger, f\"SSID does not start with '42[': {ssid[:20]}...\")",
+    )
+
+    if source != original:
+        source_path.write_text(source, encoding="utf-8")
 
 
 def _debug_binaryoptions_runtime() -> None:
@@ -66,10 +108,19 @@ def _debug_binaryoptions_runtime() -> None:
 
     logger_obj = getattr(po_async, "logger", None)
     if logger_obj is not None:
+        logger_cls = logger_obj.__class__
         print("[DEBUG] logger_type=", type(logger_obj), flush=True)
-        print("[DEBUG] logger_class_module=", logger_obj.__class__.__module__, flush=True)
+        print("[DEBUG] logger_class_module=", logger_cls.__module__, flush=True)
+        print("[DEBUG] logger_class_name=", logger_cls.__name__, flush=True)
+        print("[DEBUG] logger_mro=", logger_cls.__mro__, flush=True)
+        print("[DEBUG] logger_public_methods=", [name for name in dir(logger_obj) if not name.startswith("_")], flush=True)
         print("[DEBUG] has_warn=", hasattr(logger_obj, "warn"), flush=True)
         print("[DEBUG] has_warning=", hasattr(logger_obj, "warning"), flush=True)
+        print("[DEBUG] has_info=", hasattr(logger_obj, "info"), flush=True)
+        print("[DEBUG] has_debug=", hasattr(logger_obj, "debug"), flush=True)
+        print("[DEBUG] has_error=", hasattr(logger_obj, "error"), flush=True)
+        print("[DEBUG] has_log=", hasattr(logger_obj, "log"), flush=True)
+
 
 def _apply_warn_compat_for_binaryoptions() -> None:
     _patch_binaryoptions_warn_source()
@@ -100,6 +151,7 @@ def _apply_warn_compat_for_binaryoptions() -> None:
     for candidate in vars(po_async).values():
         if isinstance(candidate, type) and hasattr(candidate, "warning") and not hasattr(candidate, "warn"):
             setattr(candidate, "warn", candidate.warning)
+
 
 @dataclass(slots=True)
 class TradeResult:
