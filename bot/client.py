@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -19,7 +20,30 @@ except ImportError:  # pragma: no cover
     PocketOption = None
 
 
+def _patch_binaryoptions_warn_source() -> None:
+    try:
+        from BinaryOptionsToolsV2.pocketoption import asynchronous as po_async  # type: ignore
+    except ImportError:
+        return
+
+    module_file = getattr(po_async, "__file__", "")
+    if not module_file:
+        return
+
+    source_path = Path(module_file)
+    if not source_path.exists():
+        return
+
+    source = source_path.read_text(encoding="utf-8")
+    patched = source.replace("self.logger.warn(", "self.logger.warning(")
+    patched = patched.replace(".warn(", ".warning(")
+    if patched != source:
+        source_path.write_text(patched, encoding="utf-8")
+
+
 def _apply_warn_compat_for_binaryoptions() -> None:
+    _patch_binaryoptions_warn_source()
+
     if hasattr(logging.Logger, "warning") and not hasattr(logging.Logger, "warn"):
         logging.Logger.warn = logging.Logger.warning  # type: ignore[attr-defined]
     if (
