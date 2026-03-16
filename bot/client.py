@@ -19,6 +19,33 @@ except ImportError:  # pragma: no cover
     PocketOption = None
 
 
+def _apply_warn_compat_for_binaryoptions() -> None:
+    if hasattr(logging.Logger, "warning") and not hasattr(logging.Logger, "warn"):
+        logging.Logger.warn = logging.Logger.warning  # type: ignore[attr-defined]
+    if (
+        hasattr(logging, "LoggerAdapter")
+        and hasattr(logging.LoggerAdapter, "warning")
+        and not hasattr(logging.LoggerAdapter, "warn")
+    ):
+        logging.LoggerAdapter.warn = logging.LoggerAdapter.warning  # type: ignore[attr-defined]
+
+    try:
+        from BinaryOptionsToolsV2.pocketoption import asynchronous as po_async  # type: ignore
+    except ImportError:
+        return
+
+    module_logger = getattr(po_async, "logger", None)
+    if module_logger is not None and hasattr(module_logger, "warning") and not hasattr(module_logger, "warn"):
+        setattr(module_logger, "warn", module_logger.warning)
+
+    logger_cls = module_logger.__class__ if module_logger is not None else None
+    if isinstance(logger_cls, type) and hasattr(logger_cls, "warning") and not hasattr(logger_cls, "warn"):
+        setattr(logger_cls, "warn", logger_cls.warning)
+
+    for candidate in vars(po_async).values():
+        if isinstance(candidate, type) and hasattr(candidate, "warning") and not hasattr(candidate, "warn"):
+            setattr(candidate, "warn", candidate.warning)
+
 @dataclass(slots=True)
 class TradeResult:
     status: str
@@ -36,6 +63,7 @@ class ExternalServiceClient:
         self._client: Any | None = None
 
     def connect(self) -> bool:
+        _apply_warn_compat_for_binaryoptions()
         if PocketOption is None:
             raise ImportError("BinaryOptionsToolsV2 is not installed. Run: pip install binaryoptionstoolsv2")
         if not self.ssid:
@@ -66,6 +94,7 @@ class ExternalServiceClient:
 
     @staticmethod
     def _construct_client(ssid: str):
+        _apply_warn_compat_for_binaryoptions()
         try:
             return PocketOption(ssid=ssid)
         except TypeError:
