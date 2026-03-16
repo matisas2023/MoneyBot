@@ -1,5 +1,3 @@
-"""Backward-compatible launcher redirected to CLI bot."""
-
 from bot.main import main
 
 
