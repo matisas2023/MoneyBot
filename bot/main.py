@@ -34,6 +34,19 @@ def main() -> None:
     settings = load_settings(args.config)
     logger = setup_logger(settings.logging.level, settings.logging.file)
 
+    if not settings.client.ssid:
+        from .ssid_fetcher import get_ssid
+
+        ssid = get_ssid(
+            timeout=settings.client.ssid_timeout,
+            browser=settings.client.browser,
+            headless=settings.client.browser_headless,
+            log=logger.info,
+        )
+        settings.client.ssid = ssid
+
+    logger.info("[INFO] Starting bot...")
+
     from .runner import BotRunner
 
     runner = BotRunner(settings=settings, logger=logger)

@@ -12,6 +12,9 @@ client:
   api_secret: ""
   ssid: ""
   demo: true
+  browser: edge
+  browser_headless: false
+  ssid_timeout: 240
 
 signals:
   source: demo

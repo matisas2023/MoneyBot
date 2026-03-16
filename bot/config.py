@@ -25,6 +25,9 @@ class ClientSection:
     api_secret: str = ""
     ssid: str = ""
     demo: bool = True
+    browser: str = "edge"
+    browser_headless: bool = False
+    ssid_timeout: int = 240
 
 
 @dataclass(slots=True)
@@ -111,6 +114,9 @@ def validate_settings(raw: dict[str, Any]) -> Settings:
             api_secret=str(client_raw.get("api_secret", "")).strip(),
             ssid=str(client_raw.get("ssid", "")).strip(),
             demo=bool(client_raw.get("demo", True)),
+            browser=str(client_raw.get("browser", "edge")).strip().lower() or "edge",
+            browser_headless=bool(client_raw.get("browser_headless", False)),
+            ssid_timeout=int(client_raw.get("ssid_timeout", 240)),
         ),
         signals=SignalsSection(
             source=str(signals_raw.get("source", "demo")).strip().lower() or "demo",
@@ -127,6 +133,11 @@ def validate_settings(raw: dict[str, Any]) -> Settings:
             pairs=[str(item).upper().strip() for item in pairs if str(item).strip()],
         ),
     )
+
+    if settings.client.browser not in {"edge", "chrome"}:
+        raise ValueError("client.browser must be edge or chrome")
+    if settings.client.ssid_timeout <= 0:
+        raise ValueError("client.ssid_timeout must be > 0")
 
     if settings.engine.poll_interval <= 0:
         raise ValueError("engine.poll_interval must be > 0")

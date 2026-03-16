@@ -9,6 +9,7 @@ A fully headless (no GUI) Python bot architecture for terminal/VPS/Docker usage.
 - Modular architecture (`client`, `signals`, `engine`, `runner`)
 - Graceful shutdown on `Ctrl+C`
 - Reconnect attempt logic on runtime errors
+- Automatic SSID retrieval via Selenium (Edge/Chrome, Selenium Manager) when `client.ssid` is empty
 
 ## Project structure
 
@@ -73,3 +74,30 @@ USDJPY BUY
 - `client.py` is designed for integration with PocketOption (`BinaryOptionsToolsV2`).
 - If real trade methods differ in your library build, update only `ExternalServiceClient.execute_trade()` adapters.
 - No GUI dependencies are used.
+
+## Automatic SSID retrieval
+If `client.ssid` is empty, the bot automatically opens a Selenium browser and waits for manual login on PocketOption.
+
+Detection sources:
+- trading/cabinet URL transition
+- cookies (`ssid`, `session`, `sessionid`, etc.)
+- localStorage/sessionStorage keys containing `ssid`/`session`
+
+Expected console flow:
+
+```text
+[INFO] Launching browser for PocketOption login...
+[INFO] Waiting for user authentication (240s)...
+[INFO] Login detected.
+[INFO] Session SSID captured.
+[INFO] Starting bot...
+```
+
+You can choose browser mode in config:
+
+```yaml
+client:
+  browser: edge        # edge | chrome
+  browser_headless: false
+  ssid_timeout: 240
+```
