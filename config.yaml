@@ -1,0 +1,35 @@
+app:
+  name: HeadlessBot
+  env: production
+
+logging:
+  level: INFO
+  file: logs/bot.log
+
+client:
+  endpoint: ""
+  api_key: ""
+  api_secret: ""
+  ssid: ""
+  demo: true
+
+signals:
+  source: demo
+  file_path: ""
+
+engine:
+  enabled: true
+  poll_interval: 1
+  stake: 1
+  martingale: 2
+  max_steps: 3
+  timeframe_sec: 300
+  candles_limit: 150
+  pairs:
+    - EURUSD
+    - GBPUSD
+    - USDJPY
+    - USDCHF
+    - AUDUSD
+    - USDCAD
+    - NZDUSD
