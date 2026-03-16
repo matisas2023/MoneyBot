@@ -1,49 +1,50 @@
+from __future__ import annotations
+
 import argparse
 import signal
-from threading import Event
+from types import FrameType
 
-from .config import load_config
+from .config import load_settings
 from .logger import setup_logger
 
 
-shutdown_event = Event()
+class _SignalController:
+    def __init__(self, runner, logger):
+        self.runner = runner
+        self.logger = logger
+        self.triggered = False
 
-
-def _install_signal_handlers(logger, runner):
-    def handle_shutdown(_signum, _frame):
-        if shutdown_event.is_set():
+    def handle(self, _signum: int, _frame: FrameType | None) -> None:
+        if self.triggered:
             return
-        shutdown_event.set()
-        logger.info("Stopping bot...")
-        runner.stop()
-        logger.info("Shutdown complete.")
-
-    signal.signal(signal.SIGINT, handle_shutdown)
-    signal.signal(signal.SIGTERM, handle_shutdown)
+        self.triggered = True
+        self.logger.info("Stopping bot...")
+        self.runner.stop()
+        self.logger.info("Shutdown complete.")
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="PocketOption CLI bot")
-    parser.add_argument("--config", required=True, help="Path to .yaml/.yml/.json config")
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Headless PocketOption bot")
+    parser.add_argument("--config", required=True, help="Path to YAML/JSON config")
     return parser
 
 
 def main() -> None:
-    args = build_arg_parser().parse_args()
-    config = load_config(args.config)
-    logger = setup_logger(config.logging.level, config.logging.file)
+    args = _build_parser().parse_args()
+    settings = load_settings(args.config)
+    logger = setup_logger(settings.logging.level, settings.logging.file)
 
     from .runner import BotRunner
 
-    runner = BotRunner(config=config, logger=logger)
-    _install_signal_handlers(logger, runner)
+    runner = BotRunner(settings=settings, logger=logger)
+    signal_controller = _SignalController(runner, logger)
+    signal.signal(signal.SIGINT, signal_controller.handle)
+    signal.signal(signal.SIGTERM, signal_controller.handle)
 
     try:
-        runner.run()
+        runner.start()
     except KeyboardInterrupt:
-        logger.info("Stopping bot...")
-        runner.stop()
-        logger.info("Shutdown complete.")
+        signal_controller.handle(signal.SIGINT, None)
 
 
 if __name__ == "__main__":

@@ -1,22 +1,27 @@
+from __future__ import annotations
+
 import logging
 from pathlib import Path
 
 
-def setup_logger(level: str = "INFO", log_file: str | None = None) -> logging.Logger:
-    logger = logging.getLogger("bot")
+def setup_logger(level: str, file_path: str) -> logging.Logger:
+    logger = logging.getLogger("headless-bot")
     logger.setLevel(getattr(logging, level.upper(), logging.INFO))
-    logger.handlers.clear()
+    logger.propagate = False
 
-    formatter = logging.Formatter("[%(levelname)s] %(message)s")
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
 
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
+    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 
-    if log_file:
-        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(log_file, encoding="utf-8")
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
+    console = logging.StreamHandler()
+    console.setFormatter(formatter)
+    logger.addHandler(console)
+
+    log_path = Path(file_path)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
 
     return logger

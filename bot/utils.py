@@ -1,12 +1,15 @@
+from __future__ import annotations
+
 import time
 from threading import Event
 
 
-def sleep_with_stop(stop_event: Event, seconds: int | float) -> bool:
-    """Sleep in small chunks. Return True if interrupted."""
-    end_time = time.time() + float(seconds)
-    while time.time() < end_time:
+def sleep_interruptible(stop_event: Event, seconds: float) -> bool:
+    """Sleep with periodic interruption checks. Returns True if interrupted."""
+    end_time = time.monotonic() + max(0.0, seconds)
+    while time.monotonic() < end_time:
         if stop_event.is_set():
             return True
-        time.sleep(min(0.25, end_time - time.time()))
+        remaining = end_time - time.monotonic()
+        time.sleep(min(0.25, max(0.0, remaining)))
     return stop_event.is_set()

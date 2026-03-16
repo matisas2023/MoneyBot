@@ -1,3 +1,3 @@
-"""Headless CLI trading bot package."""
+"""Headless bot package."""
 
-__all__ = []
+__all__: list[str] = []
