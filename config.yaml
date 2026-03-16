@@ -1,0 +1,22 @@
+pocketoption:
+  ssid: ""
+  demo: true
+
+trading:
+  stake: 1
+  martingale: 2
+  max_steps: 3
+  pairs: ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD"]
+  timeframe_sec: 300
+  candles_limit: 150
+  check_interval_sec: 20
+  api_retry_delay_sec: 10
+
+signals:
+  source: internal
+  channel_id: ""
+  file_path: ""
+
+logging:
+  level: INFO
+  file: bot.log
