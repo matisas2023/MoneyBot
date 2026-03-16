@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -36,13 +38,42 @@ def _patch_binaryoptions_warn_source() -> None:
 
     source = source_path.read_text(encoding="utf-8")
     patched = source.replace("self.logger.warn(", "self.logger.warning(")
-    patched = patched.replace(".warn(", ".warning(")
     if patched != source:
         source_path.write_text(patched, encoding="utf-8")
 
 
+
+
+def _debug_binaryoptions_runtime() -> None:
+    if os.getenv("BOT_DEBUG_BINARYOPTIONS", "0") != "1":
+        return
+
+    try:
+        from BinaryOptionsToolsV2.pocketoption import asynchronous as po_async  # type: ignore
+        from BinaryOptionsToolsV2.pocketoption import synchronous as po_sync  # type: ignore
+    except ImportError:
+        return
+
+    print("[DEBUG] asynchronous.__file__=", getattr(po_async, "__file__", None), flush=True)
+    print("[DEBUG] synchronous.__file__=", getattr(po_sync, "__file__", None), flush=True)
+
+    async_cls = getattr(po_async, "PocketOptionAsync", None)
+    if async_cls is not None:
+        print("[DEBUG] PocketOptionAsync.__module__=", getattr(async_cls, "__module__", None), flush=True)
+        init_fn = getattr(async_cls, "__init__", None)
+        code = getattr(init_fn, "__code__", None)
+        print("[DEBUG] PocketOptionAsync.__init__.co_filename=", getattr(code, "co_filename", None), flush=True)
+
+    logger_obj = getattr(po_async, "logger", None)
+    if logger_obj is not None:
+        print("[DEBUG] logger_type=", type(logger_obj), flush=True)
+        print("[DEBUG] logger_class_module=", logger_obj.__class__.__module__, flush=True)
+        print("[DEBUG] has_warn=", hasattr(logger_obj, "warn"), flush=True)
+        print("[DEBUG] has_warning=", hasattr(logger_obj, "warning"), flush=True)
+
 def _apply_warn_compat_for_binaryoptions() -> None:
     _patch_binaryoptions_warn_source()
+    _debug_binaryoptions_runtime()
 
     if hasattr(logging.Logger, "warning") and not hasattr(logging.Logger, "warn"):
         logging.Logger.warn = logging.Logger.warning  # type: ignore[attr-defined]
@@ -123,6 +154,10 @@ class ExternalServiceClient:
             return PocketOption(ssid=ssid)
         except TypeError:
             return PocketOption(ssid)
+        except AttributeError:
+            if os.getenv("BOT_DEBUG_BINARYOPTIONS", "0") == "1":
+                print(traceback.format_exc(), flush=True)
+            raise
 
     def fetch_candles(self, symbol: str, timeframe_sec: int, candles_limit: int) -> pd.DataFrame:
         if self._client is None:
